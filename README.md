@@ -123,13 +123,6 @@ If you find issues or have better ideas, contributions and feedback are very wel
 
 See [CHANGELOG](CHANGELOG.md) for the version history (中文版见 [CHANGELOG_zh](CHANGELOG_zh.md)).
 
-## Support
-
-If you would like to support the author in getting a luminance meter:
-
-- USDT_ERC20: `0xa7475effb3f2c5fcb618e8052fc4c45ccc9d9710`  
-- BTC: `bc1qa77v8als2f7qradmtmjjy5ad057q9yws6nanx6`
-
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL‑3.0).  

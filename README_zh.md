@@ -113,11 +113,6 @@
 
 版本历史见 [CHANGELOG_zh](CHANGELOG_zh.md)（English: [CHANGELOG](CHANGELOG.md)）。
 
-## 支持
-如果你愿意支持作者买一个光度计  
-USDT_ERC20:0xa7475effb3f2c5fcb618e8052fc4c45ccc9d9710  
-BTC: bc1qa77v8als2f7qradmtmjjy5ad057q9yws6nanx6  
-
 ## 许可证
 
 本项目采用 GNU Affero General Public License v3.0（AGPL-3.0）许可协议。  
