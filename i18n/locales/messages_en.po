@@ -371,6 +371,10 @@ msgstr ""
 msgid "Failed to plot PQ curve: {}"
 msgstr ""
 
+#: app.py:533
+msgid "Failed to refresh gray history: {}"
+msgstr ""
+
 #: app.py:537
 msgid "File not found: {}"
 msgstr ""
@@ -411,6 +415,10 @@ msgstr ""
 
 #: app.py:1114
 msgid "Gray test code={} RGB={} measured XYZ: {}"
+msgstr ""
+
+#: app.py:544
+msgid "Gray history refreshed: {} runs"
 msgstr ""
 
 #: app.py:279
@@ -472,6 +480,10 @@ msgstr ""
 
 #: app.py:175
 msgid "Help"
+msgstr ""
+
+#: app.py:505
+msgid "Historical gray data:"
 msgstr ""
 
 #: tools/icc_rw_app.py:187
@@ -555,6 +567,10 @@ msgstr ""
 
 #: tools/color_space_view_app.py:330
 msgid "Line format error: {}"
+msgstr ""
+
+#: app.py:511
+msgid "Live measurement"
 msgstr ""
 
 #: tools/color_space_view_app.py:214
@@ -823,6 +839,11 @@ msgstr ""
 msgid "Red LUT:"
 msgstr ""
 
+#: app.py:512
+#: app.py:540
+msgid "Refresh"
+msgstr ""
+
 #: tools/gamut_mapper_app.py:124
 msgid "Refresh EDID"
 msgstr ""
@@ -893,6 +914,10 @@ msgstr ""
 
 #: app.py:1026
 msgid "Selected screen HDR state: {}"
+msgstr ""
+
+#: app.py:525
+msgid "Selected historical gray data: {}"
 msgstr ""
 
 #: app.py:779
@@ -1019,6 +1044,10 @@ msgstr ""
 #: app.py:1490
 #: app.py:1725
 msgid "User canceled measurement"
+msgstr ""
+
+#: app.py:1622
+msgid "Using historical gray data: {} points from {}"
 msgstr ""
 
 #: app.py:171
@@ -1163,4 +1192,8 @@ msgstr ""
 
 #: tools/manual_measure_color_app.py:181
 msgid "{}: read failed"
+msgstr ""
+
+#: app.py:507
+msgid "{} · {} pts"
 msgstr ""

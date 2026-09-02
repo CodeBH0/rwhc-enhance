@@ -286,6 +286,45 @@ def l2_normalize_XYZ(xyz, eps: float = 1e-12):
     out = np.where(norm < eps, 0.0, out)
     return out
 
+def y_normalize_XYZ(xyz, eps: float = 1e-12):
+    """
+    Normalize XYZ so that the luminance component Y equals 1.0
+    (ICC media-white convention: wtpt 的 Y 应为 1.0，原色按同一白点归一).
+    色度保持不变；Y 接近 0 的向量归零。
+    输入:
+        xyz: array-like (...,3)
+    返回:
+        与 xyz 同形状的数组，Y=1（原向量 Y<eps 时全零）
+    """
+    v = np.asarray(xyz, dtype=float)
+    y = v[..., 1:2]
+    y_safe = np.maximum(np.abs(y), eps)
+    out = v / y_safe
+    out = np.where(y < eps, 0.0, out)
+    return out
+
+def build_primaries_xyz_tags(xyz_red, xyz_green, xyz_blue, xyz_white, eps: float = 1e-12):
+    """
+    按 ICC 惯例构造 rXYZ/gXYZ/bXYZ/wtpt 标签值：
+    - wtpt: 白点 XYZ，Y 归一化为 1（色度不变）；
+    - rXYZ/gXYZ/bXYZ: 原色方向按白点【联合】缩放，使 rXYZ+gXYZ+bXYZ = wtpt，
+      即线性信号 R=G=B=1 正好复现白点（ICC.1 media-white 归一化）。
+    输入: 实测原色/白点 XYZ（任意绝对尺度，只取方向；建议用同一测试码值的测量）。
+    返回: (rXYZ, gXYZ, bXYZ, wtpt) 各为长度 3 的数组。
+    """
+    R = np.asarray(xyz_red, float).reshape(3)
+    G = np.asarray(xyz_green, float).reshape(3)
+    B = np.asarray(xyz_blue, float).reshape(3)
+    W = np.asarray(xyz_white, float).reshape(3)
+    yw = float(W[1])
+    if abs(yw) < eps:
+        raise ValueError("white luminance is zero")
+    W = W / yw
+    M0 = np.column_stack([R, G, B])
+    s = np.linalg.solve(M0, W)          # 列缩放: M0@diag(s)@[1,1,1] = W
+    M = M0 @ np.diag(s)
+    return M[:, 0], M[:, 1], M[:, 2], W
+
 def XYZ_to_bt2020_linear(xyz):
     # XYZ → 线性 BT.2020 RGB 矩阵
     XYZ_to_BT2020 = np.array([

@@ -371,6 +371,10 @@ msgstr "解析 spotread -y 模式失败；输出格式可能已更改"
 msgid "Failed to plot PQ curve: {}"
 msgstr "绘制 PQ 曲线失败：{}"
 
+#: app.py:533
+msgid "Failed to refresh gray history: {}"
+msgstr "刷新灰阶历史失败：{}"
+
 #: app.py:537
 msgid "File not found: {}"
 msgstr "无法找到文件: {}"
@@ -412,6 +416,10 @@ msgstr "生成并加载 ICC"
 #: app.py:1114
 msgid "Gray test code={} RGB={} measured XYZ: {}"
 msgstr "灰阶测试代码={} RGB={} 实测 XYZ：{}"
+
+#: app.py:544
+msgid "Gray history refreshed: {} runs"
+msgstr "灰阶历史已刷新：{} 条"
 
 #: app.py:279
 msgid "Grayscale samples:"
@@ -473,6 +481,10 @@ msgstr "当前 HDR 已关闭。请在系统设置中开启 HDR 并重启此应�
 #: app.py:175
 msgid "Help"
 msgstr "帮助"
+
+#: app.py:505
+msgid "Historical gray data:"
+msgstr "历史灰阶数据："
 
 #: tools/icc_rw_app.py:187
 msgid "ICC"
@@ -556,6 +568,10 @@ msgstr "LUT 条目必须介于 2 和 4096 之间"
 #: tools/color_space_view_app.py:330
 msgid "Line format error: {}"
 msgstr "行格式错误：{}"
+
+#: app.py:511
+msgid "Live measurement"
+msgstr "实时测量"
 
 #: tools/color_space_view_app.py:214
 msgid "Load ICC Profiles"
@@ -823,6 +839,11 @@ msgstr "就绪"
 msgid "Red LUT:"
 msgstr "红色 LUT："
 
+#: app.py:512
+#: app.py:540
+msgid "Refresh"
+msgstr "刷新"
+
 #: tools/gamut_mapper_app.py:124
 msgid "Refresh EDID"
 msgstr "刷新 EDID"
@@ -894,6 +915,10 @@ msgstr "选择仪器："
 #: app.py:1026
 msgid "Selected screen HDR state: {}"
 msgstr "所选屏幕 HDR 状态：{}"
+
+#: app.py:525
+msgid "Selected historical gray data: {}"
+msgstr "已选择历史灰阶数据：{}"
 
 #: app.py:779
 msgid "Selected this display"
@@ -1020,6 +1045,10 @@ msgstr "用户已取消校准"
 #: app.py:1725
 msgid "User canceled measurement"
 msgstr "用户已取消测量"
+
+#: app.py:1622
+msgid "Using historical gray data: {} points from {}"
+msgstr "使用历史灰阶数据：{} 点，来源 {}"
 
 #: app.py:171
 msgid "View Grayscale"
@@ -1164,3 +1193,7 @@ msgstr "{}：XYZ {:.4f},{:.4f},{:.4f} xy {:.4f},{:.4f}"
 #: tools/manual_measure_color_app.py:181
 msgid "{}: read failed"
 msgstr "{}：读取失败"
+
+#: app.py:507
+msgid "{} · {} pts"
+msgstr "{} · {}点"

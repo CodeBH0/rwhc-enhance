@@ -104,6 +104,73 @@ P3D65_test_colors_xy = [
     (0.29110012, 0.61804697), # 0.8饱和度P3绿
 ]
 
+# ============================================================================
+# 24 色行业标准色卡：X-Rite ColorChecker Classic（即 Macbeth ColorChecker）
+# 参考 Danny Pascale, "RGB coordinates of the Macbeth ColorChecker" (2006)：
+# D65 照明、sRGB 编码下的 24 个标准色块（业界最常用的 24 色卡定义）。
+# 每项：(名称, R, G, B)（0-255 sRGB 码值）。
+# ============================================================================
+ColorChecker24_srgb = [
+    ("dark_skin",        115,  82,  68),
+    ("light_skin",       194, 150, 130),
+    ("blue_sky",          98, 122, 157),
+    ("foliage",           87, 108,  67),
+    ("blue_flower",      133, 128, 177),
+    ("bluish_green",     103, 189, 170),
+    ("orange",           214, 126,  44),
+    ("purplish_blue",     80,  91, 166),
+    ("moderate_red",     193,  90,  99),
+    ("purple",            94,  60, 108),
+    ("yellow_green",     157, 188,  64),
+    ("orange_yellow",    224, 163,  46),
+    ("blue",              56,  61, 150),
+    ("green",             70, 148,  73),
+    ("red",              175,  54,  60),
+    ("yellow",           231, 198,  31),
+    ("magenta",          187,  86, 149),
+    ("cyan",               8, 133, 161),
+    ("white_9.5",        243, 243, 242),
+    ("neutral_8",        200, 200, 200),
+    ("neutral_6.5",      160, 160, 160),
+    ("neutral_5",        122, 122, 121),
+    ("neutral_3.5",       85,  85,  85),
+    ("black_2",           52,  52,  52),
+]
+
+# 标准 sRGB (D65) -> XYZ 矩阵（IEC 61966-2-1），白点 Y=1
+SRGB_TO_XYZ_MATRIX = np.array([
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041],
+])
+
+def srgb_rgb255_to_XYZ_norm(rgb255):
+    """
+    sRGB 0-255 码值 -> 相对 XYZ（白点 (255,255,255) 的 Y=1）。
+    采用 IEC 61966-2-1 的 sRGB OETF 与 D65 矩阵。
+    """
+    c = np.clip(np.asarray(rgb255, dtype=float) / 255.0, 0.0, 1.0)
+    lin = srgb_encode(c)
+    return SRGB_TO_XYZ_MATRIX @ lin
+
+# 24 色卡的色度（xy），供测量套件等复用
+sRGB_test_colors_xy_24 = [
+    tuple(XYZ_to_xy(srgb_rgb255_to_XYZ_norm(rgb)).tolist())
+    for _, *rgb in ColorChecker24_srgb
+]
+
+# 色卡挡位（GUI "Color sample set" 下拉框取值）
+COLOR_CARD_SRGB_12    = "sRGB(12)"
+COLOR_CARD_SRGB_P3_12 = "sRGB(12)+DisplayP3(7)"
+COLOR_CARD_SRGB_24    = "sRGB(24)"
+COLOR_CARD_SRGB_P3_24 = "sRGB(24)+DisplayP3(7)"
+COLOR_CARD_CHOICES = [
+    COLOR_CARD_SRGB_12,
+    COLOR_CARD_SRGB_P3_12,
+    COLOR_CARD_SRGB_24,
+    COLOR_CARD_SRGB_P3_24,
+]
+
 def pq_uniform_test_suit(xy, Ymin, Ymax, count):
     """
     Given chromaticity (x,y) and luminance range [Ymin, Ymax] in nits,
@@ -139,10 +206,13 @@ def pq_uniform_test_suit(xy, Ymin, Ymax, count):
     XYZ = np.stack([Xs, Ys, Zs], axis=1)/10000.0 
     return XYZ
 
-def get_D65_white_calibrate_test_XYZ_suit(color_gamut):
+def get_D65_white_calibrate_test_XYZ_suit(color_gamut, paper_white_nit=200):
     # 返回白场的测试集
+    # paper_white_nit: SDR 纸白亮度（nit）。默认 200 保持旧行为；
+    # 建议传入系统实际报告的纸白（Windows HDR 的 SDR 内容亮度），
+    # 使色度校准锚定在实际使用的 SDR 白亮度上。
     Y_max = color_gamut["white"][1]
-    Y = min(Y_max * 0.8, 200)
+    Y = min(Y_max * 0.8, paper_white_nit)
     
     return [xyY_to_XYZ([*D65_WHITE_POINT, Y])]
 
@@ -155,7 +225,7 @@ def get_D65_white_measure_test_XYZ_suit(color_gamut):
     suit = pq_uniform_test_suit(xy=(x,y), Ymin=Y_min, Ymax=Y_max*0.8, count=10).tolist()
     return suit
 
-def get_srgb_calibrate_XYZ_suit(color_gamut):
+def get_srgb_calibrate_XYZ_suit(color_gamut, paper_white_nit=200):
     """
     返回 sRGB 色域内校准用测试集。这里按“色域定义”构矩阵：
     - 原色/白点：color_gamut中定义
@@ -167,7 +237,7 @@ def get_srgb_calibrate_XYZ_suit(color_gamut):
     xy_W = XYZ_to_xy(color_gamut["white"])
 
     ret = []
-    for white in get_D65_white_calibrate_test_XYZ_suit(color_gamut):
+    for white in get_D65_white_calibrate_test_XYZ_suit(color_gamut, paper_white_nit):
         white = [itm*10000.0 for itm in white]  # 转为 nit
         Yw = float(white[1])                    # 白的亮度（nits）
         caps = (1.0, 1.0, 1.0)
@@ -181,7 +251,7 @@ def get_srgb_calibrate_XYZ_suit(color_gamut):
             ret.append(XYZ.tolist())
     return ret
 
-def get_P3D65_calibrate_XYZ_suit(color_gamut):
+def get_P3D65_calibrate_XYZ_suit(color_gamut, paper_white_nit=200):
     """
     返回 Display P3(D65) 色域内校准用测试集。按色域定义构矩阵：
     - 原色：P3 primaries
@@ -194,7 +264,7 @@ def get_P3D65_calibrate_XYZ_suit(color_gamut):
     xy_W = XYZ_to_xy(color_gamut["white"])
 
     ret = []
-    for white in get_D65_white_calibrate_test_XYZ_suit(color_gamut):
+    for white in get_D65_white_calibrate_test_XYZ_suit(color_gamut, paper_white_nit):
         white = [itm*10000.0 for itm in white]  # 转为 nit
         Yw = float(white[1])                    # 白的亮度（nit）
         caps = (1.0, 1.0, 1.0)
@@ -259,6 +329,69 @@ def get_P3D65_measure_XYZ_suit(color_gamut):
                 continue
             XYZ = xyY_to_XYZ([x, y, Y_max])
             print(f"white {Yw}nit Y_max for P3D65 {x} {y} -> {Y_max} {XYZ.tolist()}")
+            ret.append(XYZ.tolist())
+    return ret
+
+def get_srgb_24_calibrate_XYZ_suit(color_gamut, paper_white_nit=200):
+    """
+    返回 24 色行业标准色卡（X-Rite ColorChecker Classic）的校准用测试集。
+    与 get_srgb_calibrate_XYZ_suit（12 色）的区别：
+    - 24 个色块全部来自标准色卡（含 6 级灰阶）；
+    - 每个色块的色度与相对亮度均为色卡真实值，亮度按纸白锚定缩放
+      （白块 ≈ 纸白亮度，其余色块按反射率等比缩放）；
+    - 若某色块亮度超出所选色域在该色度的最大可显示亮度，则截断到该最大值；
+      完全超出色域（Y_max=0）的色块跳过。
+    说明：矩阵拟合是色度拟合（fit_XYZ2XYZ_wlock_dropY + 白点锁定），
+    亮度只影响显示与测量信噪比，不影响拟合结果。
+    """
+    xy_R = XYZ_to_xy(color_gamut["red"])
+    xy_G = XYZ_to_xy(color_gamut["green"])
+    xy_B = XYZ_to_xy(color_gamut["blue"])
+    xy_W = XYZ_to_xy(color_gamut["white"])
+
+    ret = []
+    for white in get_D65_white_calibrate_test_XYZ_suit(color_gamut, paper_white_nit):
+        white = [itm*10000.0 for itm in white]  # 转为 nit
+        Yw = float(white[1])                    # 纸白亮度（nits）
+        caps = (1.0, 1.0, 1.0)
+        for name, r, g, b in ColorChecker24_srgb:
+            xyz_rel = srgb_rgb255_to_XYZ_norm((r, g, b))
+            x, y = XYZ_to_xy(xyz_rel)
+            Y_patch = float(xyz_rel[1]) * Yw    # 色卡真实亮度（nits）
+            Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
+            if Y_max == 0:
+                print(f"skip Ymax=0 srgb24 {name} {x} {y}")
+                continue
+            Y_patch = min(Y_patch, Y_max)       # 窄色域保护：截断到可显示亮度
+            XYZ = xyY_to_XYZ([x, y, Y_patch])
+            print(f"srgb24 {name} ({r},{g},{b}) xy=({x:.4f},{y:.4f}) Y={Y_patch:.1f}nit -> {XYZ.tolist()}")
+            ret.append(XYZ.tolist())
+    return ret
+
+def get_srgb_24_measure_XYZ_suit(color_gamut):
+    """
+    返回 24 色行业标准色卡（X-Rite ColorChecker Classic）的测量色准用测试集。
+    结构同 get_srgb_measure_XYZ_suit：每个色块 × 10 个 PQ 均匀亮度档。
+    """
+    xy_R = XYZ_to_xy(color_gamut["red"])
+    xy_G = XYZ_to_xy(color_gamut["green"])
+    xy_B = XYZ_to_xy(color_gamut["blue"])
+    xy_W = XYZ_to_xy(color_gamut["white"])
+
+    ret = []
+    for white in get_D65_white_measure_test_XYZ_suit(color_gamut):
+        white = [itm*10000.0 for itm in white]  # 转为 nits
+        Yw = float(white[1])                    # 白的亮度（nits）
+        caps = (1.0, 1.0, 1.0)
+        for name, r, g, b in ColorChecker24_srgb:
+            xyz_rel = srgb_rgb255_to_XYZ_norm((r, g, b))
+            x, y = XYZ_to_xy(xyz_rel)
+            Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
+            if Y_max == 0:
+                print(f"skip Ymax=0 srgb24 {name} {x} {y}")
+                continue
+            XYZ = xyY_to_XYZ([x, y, Y_max])
+            print(f"white {Yw}nit Y_max for srgb24 {name} ({r},{g},{b}) -> {Y_max} {XYZ.tolist()}")
             ret.append(XYZ.tolist())
     return ret
 

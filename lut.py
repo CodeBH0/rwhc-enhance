@@ -271,6 +271,26 @@ def generate_bright_pq_lut(target_len=4096):
     # lut = np.clip(lut * 1.1, 0.0, 1.0)
     return lut
 
+def apply_sdr_tint_compensation(lut_r, lut_g, lut_b, r_scale=1.0, g_scale=1.0, b_scale=1.0,
+                                sdr_pq_top=0.62, taper=0.15):
+    """
+    在 SDR 亮度区间（0 ~ sdr_pq_top PQ，约 0~320 nit）对 MHC2 的每通道 1D LUT
+    施加平滑缩放，用于补偿该显示器在 HDR 模式下渲染 SDR 内容的系统性暖色偏差
+    （经验值，依据校色报告统计：暖色偏亮、偏黄 → G 多降、R 少降、B 微降）。
+    sdr_pq_top 以上经 taper 区间线性过渡回 1.0（不影响 HDR 高光）。
+    返回 (lut_r, lut_g, lut_b)。
+    """
+    lut_r = np.asarray(lut_r, dtype=float).copy()
+    lut_g = np.asarray(lut_g, dtype=float).copy()
+    lut_b = np.asarray(lut_b, dtype=float).copy()
+    n = len(lut_r)
+    t = np.linspace(0, 1, n)
+    w = np.clip((sdr_pq_top + taper - t) / max(float(taper), 1e-9), 0.0, 1.0)
+    lut_r = np.clip(lut_r * (1.0 + (r_scale - 1.0) * w), 0.0, 1.0)
+    lut_g = np.clip(lut_g * (1.0 + (g_scale - 1.0) * w), 0.0, 1.0)
+    lut_b = np.clip(lut_b * (1.0 + (b_scale - 1.0) * w), 0.0, 1.0)
+    return lut_r, lut_g, lut_b
+
 def generate_mhc2_lut_from_measure_data(real_nit, target_pq=None, max_nit=10000, ratio=1, eetf_args=None):
     """
     依据实测灰阶亮度曲线生成 PQ→PQ 的 1D LUT来校准显示器亮度响应（长度 4096）。

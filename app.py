@@ -8,6 +8,7 @@ from color_test_suit import *
 from color_rw import ColorReader, ColorWriter
 from log import logging, TextHandler
 from i18n.i18n_loader import _
+from gray_history import parse_gray_runs
 
 from win_display import (
     get_all_display_config,
@@ -48,13 +49,18 @@ class HDRCalibrationUI:
             "green": [0, 592, 0],
             "blue": [0, 0, 592],
             "white": [1023, 1023, 1023],
-            "white_200nit": [592, 592, 592],
+            # SDR 纸白测试点：码值在 calibrate_monitor 里按系统报告的实际纸白重新计算
+            "white_paper": [592, 592, 592],
             "black": [0, 0, 0],
         }
         self.measure_gamut_xyz = {}
 
         self.preview_icc_name = None
         self.measured_pq = {"red": [], "green": [], "blue": []}
+
+        # Historical PQ gray data (parsed from hc.log) for skipping re-measurement
+        self.gray_history_runs = []
+        self.selected_gray_run = None
 
         self.proc_color_write = None
         self.proc_color_reader = None
@@ -100,6 +106,13 @@ class HDRCalibrationUI:
                     hc[h_dname]["color_work_status"] = "sdr_acm"
         self.human_display_config_map = hc
 
+        # Parse historical PQ gray runs at startup so the user can skip re-measuring.
+        self.log_path = os.path.join(os.path.dirname(__file__), "hc.log")
+        try:
+            self.gray_history_runs = parse_gray_runs(self.log_path)
+        except Exception:
+            self.gray_history_runs = []
+
         self.build_ui()
         self.init_logging()
         self.on_monitor_changed()
@@ -112,7 +125,7 @@ class HDRCalibrationUI:
         root_logger = logging.getLogger()
         root_logger.addHandler(th)
 
-        log_path = os.path.join(os.path.dirname(__file__), "hc.log")
+        log_path = getattr(self, "log_path", os.path.join(os.path.dirname(__file__), "hc.log"))
         fh = logging.FileHandler(log_path, encoding="utf-8")
         fh.setFormatter(fmt)
         fh.setLevel(logging.DEBUG)
@@ -292,7 +305,7 @@ class HDRCalibrationUI:
         )
         pq_points_menu.grid(row=3, column=0, sticky="we", padx=(120, 33), pady=(0, 12))
 
-        self.color_space_var = tk.StringVar(value="sRGB")
+        self.color_space_var = tk.StringVar(value=COLOR_CARD_SRGB_12)
         tk.Label(
             button_frame,
             text=_("Color sample set:"),
@@ -302,9 +315,9 @@ class HDRCalibrationUI:
         color_space_menu = ttk.Combobox(
             button_frame,
             textvariable=self.color_space_var,
-            values=["sRGB", "sRGB+DisplayP3"],
+            values=COLOR_CARD_CHOICES,
             font=("Microsoft YaHei", 16),
-            width=6,
+            width=22,
             state="readonly",
         )
         color_space_menu.grid(
@@ -333,20 +346,54 @@ class HDRCalibrationUI:
             row=3, column=2, sticky="w", padx=(0, 0), pady=(0, 14)
         )
 
+        # Historical PQ gray data selector: reuse a past measurement instead of
+        # re-measuring the PQ curve when only the color temperature changed.
+        self.gray_history_var = tk.StringVar()
+        self.gray_history_choices = self._build_gray_history_choices()
+        tk.Label(
+            button_frame,
+            text=_("Historical gray data:"),
+            font=("Microsoft YaHei", 16),
+            bg="#f8f8f8",
+        ).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=(0, 12))
+        gray_history_frame = tk.Frame(button_frame, bg="#f8f8f8")
+        gray_history_frame.grid(
+            row=4, column=0, columnspan=2, sticky="we", padx=(120, 33), pady=(0, 12)
+        )
+        self.gray_history_menu = ttk.Combobox(
+            gray_history_frame,
+            textvariable=self.gray_history_var,
+            values=self.gray_history_choices,
+            font=("Microsoft YaHei", 16),
+            width=30,
+            state="readonly",
+        )
+        self.gray_history_menu.pack(side="left", fill="x", expand=True)
+        self.gray_history_menu.bind("<<ComboboxSelected>>", self.on_gray_history_selected)
+        ttk.Button(
+            gray_history_frame,
+            text=_("Refresh"),
+            command=self.refresh_gray_history,
+            style="TButton",
+            width=10,
+        ).pack(side="left", padx=(8, 0))
+        if self.gray_history_choices:
+            self.gray_history_var.set(self.gray_history_choices[0])
+
         self.white_point_var = tk.StringVar(value="0.3127,0.3290")
         tk.Label(
             button_frame,
             text=_("WhitePoint:"),
             font=("Microsoft YaHei", 16),
             bg="#f8f8f8",
-        ).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=(0, 12))
+        ).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=(0, 12))
         white_point_entry = ttk.Entry(
             button_frame,
             textvariable=self.white_point_var,
             font=("Microsoft YaHei", 16),
             width=12,
         )
-        white_point_entry.grid(row=4, column=0, sticky="we", padx=(120, 33), pady=(0, 12))
+        white_point_entry.grid(row=5, column=0, sticky="we", padx=(120, 33), pady=(0, 12))
 
         self.preview_var = tk.BooleanVar(value=False) 
         self.preview_var.trace_add("write", lambda *a: self.on_preview_toggle())
@@ -357,7 +404,7 @@ class HDRCalibrationUI:
             style="TCheckbutton",
         )
         self.preview_checkbutton.grid(
-            row=4, column=1, sticky="w", padx=(0, 0), pady=(0, 14)
+            row=5, column=1, sticky="w", padx=(0, 0), pady=(0, 14)
         )
 
         self.icc_set_var = tk.BooleanVar(value=True) 
@@ -368,7 +415,7 @@ class HDRCalibrationUI:
             style="TCheckbutton",
         )
         self.icc_set_checkbutton.grid(
-            row=4, column=2, sticky="w", padx=(0, 0), pady=(0, 14)
+            row=5, column=2, sticky="w", padx=(0, 0), pady=(0, 14)
         )
 
         ttk.Button(
@@ -378,7 +425,7 @@ class HDRCalibrationUI:
             style="TButton",  
             
             width=20,
-        ).grid(row=5, column=0, padx=(0, 30), pady=(10, 0), sticky="w")
+        ).grid(row=6, column=0, padx=(0, 30), pady=(10, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -386,7 +433,7 @@ class HDRCalibrationUI:
             command=self.measure_pq,
             style="TButton",
             width=20,
-        ).grid(row=5, column=1, padx=(0, 30), pady=(10, 0), sticky="w")
+        ).grid(row=6, column=1, padx=(0, 30), pady=(10, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -394,7 +441,7 @@ class HDRCalibrationUI:
             command=self.generate_and_save_icc,
             style="TButton",
             width=20,
-        ).grid(row=5, column=2, pady=(10, 0), sticky="w")
+        ).grid(row=6, column=2, pady=(10, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -402,14 +449,14 @@ class HDRCalibrationUI:
             command=lambda: os.system("start devmgmt.msc"),
             style="TButton",
             width=20,
-        ).grid(row=6, column=0, columnspan=2, pady=(20, 0), sticky="w")
+        ).grid(row=7, column=0, columnspan=2, pady=(20, 0), sticky="w")
         ttk.Button(
             button_frame,
             text=_("Open Windows Services"),
             command=lambda: os.system("start services.msc"),
             style="TButton",
             width=20,
-        ).grid(row=6, column=1, columnspan=2, pady=(20, 0), sticky="w")
+        ).grid(row=7, column=1, columnspan=2, pady=(20, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -417,7 +464,7 @@ class HDRCalibrationUI:
             command=lambda: webbrowser.open(self.argyll_download_url),
             style="TButton",
             width=20,
-        ).grid(row=6, column=2, columnspan=2, pady=(20, 0), sticky="w")
+        ).grid(row=7, column=2, columnspan=2, pady=(20, 0), sticky="w")
 
         log_frame = ttk.LabelFrame(root, text=_("Log"))
         log_frame.pack(fill="both", expand=True, padx=36, pady=(0, 20))
@@ -454,6 +501,47 @@ class HDRCalibrationUI:
                 ctypes.windll.user32.SetProcessDPIAware()
             except Exception:
                 pass
+
+    def _gray_run_label(self, run):
+        """Human-readable label for a historical gray run (by measurement end time)."""
+        return _("{} · {} pts").format(run["end"].strftime("%m-%d %H:%M:%S"), run["num"])
+
+    def _build_gray_history_choices(self):
+        """First item is always 'live measurement'; then one entry per complete run."""
+        choices = [_("Live measurement")]
+        for run in self.gray_history_runs:
+            choices.append(self._gray_run_label(run))
+        return choices
+
+    def on_gray_history_selected(self, event=None):
+        """Combobox changed: remember the picked historical run (or None for live)."""
+        label = self.gray_history_var.get()
+        self.selected_gray_run = None
+        if label == _("Live measurement"):
+            return
+        for run in self.gray_history_runs:
+            if self._gray_run_label(run) == label:
+                self.selected_gray_run = run
+                logging.info(_("Selected historical gray data: {}").format(label))
+                return
+
+    def refresh_gray_history(self):
+        """Re-parse hc.log and refresh the combobox (keep current selection if still valid)."""
+        try:
+            self.gray_history_runs = parse_gray_runs(self.log_path)
+        except Exception as e:
+            logging.error(_("Failed to refresh gray history: {}").format(e))
+            self.gray_history_runs = []
+        prev = self.gray_history_var.get() if hasattr(self, "gray_history_var") else ""
+        self.gray_history_choices = self._build_gray_history_choices()
+        if hasattr(self, "gray_history_menu"):
+            self.gray_history_menu["values"] = self.gray_history_choices
+        if prev in self.gray_history_choices:
+            self.gray_history_var.set(prev)
+        else:
+            self.gray_history_var.set(self.gray_history_choices[0])
+        self.on_gray_history_selected()
+        logging.info(_("Gray history refreshed: {} runs").format(len(self.gray_history_runs)))
 
     def run_in_thread(self, worker, on_done):
         """
@@ -1030,6 +1118,21 @@ class HDRCalibrationUI:
         self.icc_handle.rebuild()
         self.icc_handle.save(path)
 
+    def get_paper_white_nit(self):
+        """
+        返回当前所选显示器在 Windows HDR 模式下系统实际使用的 SDR 纸白亮度（nit）。
+        优先取 OS 报告的 DISPLAYCONFIG_SDR_WHITE_LEVEL（滑条设置），
+        取不到时回退到 200 nit（旧行为）。
+        """
+        try:
+            info = self.human_display_config_map.get(self.monitor_var.get())
+            v = info["target"].get("sdr_white_level_nits")
+            if v and v > 0:
+                return float(v)
+        except Exception:
+            pass
+        return 200.0
+
     @safe_call
     def calibrate_monitor(self):
         logging.info(_("Calibration started"))
@@ -1043,6 +1146,14 @@ class HDRCalibrationUI:
             self.clean_color_rw_process()
             self.unfreeze_ui()
             return
+
+        # 用系统实际报告的 SDR 纸白（滑条设置）锚定白点测试码值，
+        # 使色度校准对准用户实际观看 SDR 的亮度。
+        paper_white = self.get_paper_white_nit()
+        paper_code = int(round(pq_oetf(paper_white) * 1023))
+        self.gamut_test_rgb["white_paper"] = [paper_code] * 3
+        logging.info(_("SDR paper white: {:.1f} nits, white test patch code: {}").format(
+            paper_white, paper_code))
 
         self.proc_color_write = ColorWriter()
         args = self.get_spotread_args()
@@ -1096,6 +1207,9 @@ class HDRCalibrationUI:
             self.clean_color_rw_process()
             self.icc_change_delay = 0
             self.preview_var.set(origin_preview_status)
+            # A fresh PQ measurement was just logged: make it selectable for
+            # the next calibration (e.g. after changing the color temperature).
+            self.refresh_gray_history()
             if isinstance(result, Exception):
                 raise result
             
@@ -1173,15 +1287,21 @@ class HDRCalibrationUI:
         self.MHC2["peak_luminance"] = peak_lumi
         self.icc_handle.write_XYZType("lumi", [[max_lumi, max_lumi, max_lumi]])
         
-        r = l2_normalize_XYZ(self.measure_gamut_xyz["red"])
-        g = l2_normalize_XYZ(self.measure_gamut_xyz["green"])
-        b = l2_normalize_XYZ(self.measure_gamut_xyz["blue"])
-        w = l2_normalize_XYZ(self.measure_gamut_xyz["white_200nit"])
+        r, g, b, w = build_primaries_xyz_tags(
+            self.measure_gamut_xyz["red"],
+            self.measure_gamut_xyz["green"],
+            self.measure_gamut_xyz["blue"],
+            self.measure_gamut_xyz["white_paper"])
         logging.info(_("Writing RGBW XYZ:\n {}\n {}\n {}\n {}").format(r, g, b, w))
         self.icc_handle.write_XYZType("rXYZ", [r])
         self.icc_handle.write_XYZType("gXYZ", [g])
         self.icc_handle.write_XYZType("bXYZ", [b])
         self.icc_handle.write_XYZType("wtpt", [w])
+        # SDR 路径 TRC：校准后显示器在 HDR 模式下的 SDR 响应即 sRGB EOTF
+        # （Windows 以纸白为锚点经 MHC2 LUT 驱动）。模板里的 gamma 2.2 与之不符，
+        # 会导致按 profile 做 SDR 预测/渲染时色度偏移。
+        srgb_trc = {'type': 'curve', 'values': srgb_encode(np.linspace(0, 1, 1024)).tolist()}
+        self.icc_handle.write_rgbTRC({'rTRC': srgb_trc, 'gTRC': srgb_trc, 'bTRC': srgb_trc})
         
         self.icc_handle.write_MHC2(self.MHC2)
 
@@ -1226,15 +1346,18 @@ class HDRCalibrationUI:
         self.MHC2["peak_luminance"] = peak_lumi
         self.icc_handle.write_XYZType("lumi", [[max_lumi, max_lumi, max_lumi]])
         
-        r = l2_normalize_XYZ(self.measure_gamut_xyz["red"])
-        g = l2_normalize_XYZ(self.measure_gamut_xyz["green"])
-        b = l2_normalize_XYZ(self.measure_gamut_xyz["blue"])
-        w = l2_normalize_XYZ(self.measure_gamut_xyz["white_200nit"])
+        r, g, b, w = build_primaries_xyz_tags(
+            self.measure_gamut_xyz["red"],
+            self.measure_gamut_xyz["green"],
+            self.measure_gamut_xyz["blue"],
+            self.measure_gamut_xyz["white_paper"])
         logging.info(_("Writing RGBW XYZ:\n {r}\n {g}\n {b}\n {w}").format(r=r, g=g, b=b, w=w))
         self.icc_handle.write_XYZType("rXYZ", [r])
         self.icc_handle.write_XYZType("gXYZ", [g])
         self.icc_handle.write_XYZType("bXYZ", [b])
         self.icc_handle.write_XYZType("wtpt", [w])
+        srgb_trc = {'type': 'curve', 'values': srgb_encode(np.linspace(0, 1, 1024)).tolist()}
+        self.icc_handle.write_rgbTRC({'rTRC': srgb_trc, 'gTRC': srgb_trc, 'bTRC': srgb_trc})
         
         self.icc_handle.write_MHC2(self.MHC2)
 
@@ -1244,11 +1367,17 @@ class HDRCalibrationUI:
         # measure and build matrix
         self.preview_var.set(True)
         logging.info(_("Start color measurement and generate matrix"))
-        self.target_xyz = get_srgb_calibrate_XYZ_suit(self.measure_gamut_xyz)
-        if self.color_space_var.get() == "sRGB+DisplayP3":
-            self.target_xyz.extend(get_P3D65_calibrate_XYZ_suit(self.measure_gamut_xyz))
-        white_points = get_D65_white_calibrate_test_XYZ_suit(self.measure_gamut_xyz)
+        paper_white = self.get_paper_white_nit()
+        mode = self.color_space_var.get()
+        if mode.startswith(COLOR_CARD_SRGB_24):
+            self.target_xyz = get_srgb_24_calibrate_XYZ_suit(self.measure_gamut_xyz, paper_white)
+        else:
+            self.target_xyz = get_srgb_calibrate_XYZ_suit(self.measure_gamut_xyz, paper_white)
+        if "+DisplayP3" in mode:
+            self.target_xyz.extend(get_P3D65_calibrate_XYZ_suit(self.measure_gamut_xyz, paper_white))
+        white_points = get_D65_white_calibrate_test_XYZ_suit(self.measure_gamut_xyz, paper_white)
         self.target_xyz.extend(white_points)
+        logging.info(_("Color sample set: {}, {} samples").format(mode, len(self.target_xyz)))
         self.measured_xyz = []
         i = 1
         l = len(self.target_xyz)
@@ -1267,11 +1396,61 @@ class HDRCalibrationUI:
             i += 1
         matrix = fit_XYZ2XYZ_wlock_dropY(self.measured_xyz, self.target_xyz,self.measured_xyz[-1], self.target_xyz[-1])
         # matrix = fit_XYZ2XYZ(self.measure_convert_xyz, self.convert_xyz)
-        ori_matrix = np.array(self.MHC2["matrix"]).reshape(3, 3)
-        matrix2 = ori_matrix @ matrix
-        self.MHC2["matrix"] = matrix2.flatten().tolist()
+        # 仅用于诊断：记录拟合矩阵（不写入 profile）
+        logging.info(_("Chromaticity fit matrix (diagnostic only): {}").format(matrix.flatten().tolist()))
+        # 关键修复（2026-09-01）：不要把上面的拟合矩阵写入 profile 的 MHC2。
+        # 实测验证（校色报告 vs 矩阵计算）：Windows 的 SDR→HDR 转换会把 MHC2 矩阵
+        # 直接乘在内容 XYZ 上（测得颜色 == MHC2矩阵 @ 内容XYZ）。这里拟合出的矩阵
+        # 是 measured→target 的“校正”，若写入 profile 会被 Windows 当作对内容的
+        # 变换再套一层，导致宽色域显示器上黄/绿/橙严重欠饱和（b* 崩塌 20~60）。
+        #
+        # 默认行为（发布版）：MHC2 矩阵保持单位阵（v3 行为），色域映射交给实测
+        # 原色标签 (rXYZ/gXYZ/bXYZ/wtpt) 与 1D LUT 完成——这是最通用的选择。
+        self.MHC2["matrix"] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         self.icc_handle.write_MHC2(self.MHC2)
         logging.info(_("Color matrix measurement finished, matrix: {}").format(self.MHC2["matrix"]))
+
+        # ------------------------------------------------------------------
+        # 实验性暖色修正矩阵（已注释，默认不启用）
+        # ------------------------------------------------------------------
+        # 历史：纯单位阵会让暖色残余（偏亮、偏黄）无法修正。v4 实验证明用 1D LUT
+        # 做全局缩放会拖累灰阶/蓝色。v5/v6 实验（灰阶不变暖矩阵）修暖色有代价：
+        #   v5 纯红顶点被推向原生深红（品红观感）、蓝色系被推向青色（2G 9.4 dE）；
+        #   v6 改为“红顶点+灰阶不变”后暖色没修好（1G 仍 4.2、3F 4.2）且绿/蓝损伤
+        #   依旧（avg 1.71→2.30、2G 9.35），v6 已被否。
+        # v7（作者 FFALCON R27U81 标定，2026-09-02）：保持绿色、蓝色顶点不变，
+        # 把红色顶点沿 x+y=const（斜率 -1）方向上移。数学：
+        #   约束 W·绿=绿、W·蓝=蓝 ⇒ W = I + u⊗n，n = 绿×蓝（sRGB 内容原色）。
+        #   此时红点移动 δ = u·(n·红)，且白点移动同一 δ（白=红+绿+蓝，
+        #   线性代数必然结果）——灰阶会有与红点同量的偏移，下游 1D LUT 无法
+        #   补偿（LUT 逐通道、在矩阵之后）。这是本设计的固有代价，幅度由 s 控制。
+        # 参数 s：内容空间红点扰动幅度（相对 |红| 的比例）。s=0 → 单位阵（v3 行为）。
+        #   s≈0.02：红顶点估计移动 Δxy≈(-0.008,+0.011)，白点 Δxy≈(-0.0016,+0.0024)
+        #   （灰阶 dE 约 +1~2）；实际渲染响应需重新校准 + 报告验证（参考 v5 教训：
+        #   内容空间的移动与报告实测并非严格 1:1）。
+        # v7 实测（archive\2026-09-01_v7-verified\）：avg 1.16 / max 5.52，
+        #   红顶点 (0.669,0.281)→(0.6323,0.3183)，绿/蓝不动，灰阶 ≤1.3 dE。
+        # 说明：该矩阵针对作者显示器标定（avg 1.16 / max 5.52），对其他显示器
+        # 未必适用，故发布版默认关闭。如需在你的显示器上尝试，取消下方注释并按
+        # 需调整 s 后重新校准（完整推导见 PATCHES.md 归档 / CHANGELOG）。
+        # sRGB_RED_XYZ   = np.array([0.4124, 0.2126, 0.0193])
+        # sRGB_GREEN_XYZ = np.array([0.3576, 0.7152, 0.1192])
+        # sRGB_BLUE_XYZ  = np.array([0.1805, 0.0722, 0.9505])
+        # n_vec = np.cross(sRGB_GREEN_XYZ, sRGB_BLUE_XYZ)      # (0.6712, -0.3184, -0.1033)
+        # n_dot_r = float(np.dot(n_vec, sRGB_RED_XYZ))         # 0.2071
+        # # u 的方向：给红点内容“减 X、加 Y、微减 Z”（往绿混、离开品红），
+        # # 即把渲染出的红顶点向上（y 增大）推；斜率由 delta_dir 的 Y/X 比决定
+        # # （Y/X=2.0 → 渲染斜率 ≈ -1.0，已验证），幅度由 s 控制。
+        # s = 0.02                                             # 红点扰动幅度（0=关闭，即 v3）
+        # delta_dir = np.array([-0.5, 1.0, -0.2])              # 斜率 1.0（已验证 v7）
+        # delta_dir = delta_dir / np.linalg.norm(delta_dir)
+        # delta_xyz = s * np.linalg.norm(sRGB_RED_XYZ) * delta_dir
+        # u_vec = delta_xyz / n_dot_r
+        # warm_matrix = np.eye(3) + np.outer(u_vec, n_vec)
+        # self.MHC2["matrix"] = warm_matrix.flatten().tolist()
+        # self.icc_handle.write_MHC2(self.MHC2)
+        # logging.info(_("v7 red-move matrix: s={}, red content delta={}, white content delta={} (same delta, see comment)").format(
+        #     s, delta_xyz.tolist(), delta_xyz.tolist()))
     
     def calibrate_white_by_lut(self):
         logging.info(_("Start calibrating grayscale chromaticity to D65"))
@@ -1455,17 +1634,34 @@ class HDRCalibrationUI:
         wp = [float(x.strip()) for x in self.white_point_var.get().split(",")]
         m = calculate_bradford_matrix(wp, D65_WHITE_POINT)
         num = int(self.pq_points_var.get())
-        for idx, grayscale in enumerate(np.linspace(0, 1023, num, endpoint=True).round().astype(np.int32)):
-            grayscale = int(grayscale)
-            rgb = [grayscale, grayscale, grayscale]
-            self.proc_color_write.write_rgb(rgb, delay=0.03)
-            XYZ = self.proc_color_reader.read_XYZ()
-            XYZ_converted = m@XYZ
-            rgb_measured = XYZ_to_BT2020_PQ_rgb(XYZ_converted/10000)
-            logging.info(_("({}/{}) Output RGB: {} Measured XYZ: {} RGB: {}").format(idx+1, num, rgb, XYZ, rgb_measured*1023))
-            self.measured_pq["red"].append(float(rgb_measured[0]))
-            self.measured_pq["green"].append(float(rgb_measured[1]))
-            self.measured_pq["blue"].append(float(rgb_measured[2]))
+
+        history_run = getattr(self, "selected_gray_run", None)
+        if history_run is not None:
+            # Reuse the raw XYZ logged by a previous PQ measurement on this
+            # monitor, re-applying the CURRENT white point's Bradford matrix.
+            # The monitor's native response does not depend on the target
+            # color temperature, so no re-measurement is needed.
+            num = history_run["num"]
+            logging.info(_("Using historical gray data: {} points from {}").format(
+                num, history_run["end"].strftime("%m-%d %H:%M:%S")))
+            for code, xyz in history_run["points"]:
+                XYZ_converted = m @ xyz
+                rgb_measured = XYZ_to_BT2020_PQ_rgb(XYZ_converted/10000)
+                self.measured_pq["red"].append(float(rgb_measured[0]))
+                self.measured_pq["green"].append(float(rgb_measured[1]))
+                self.measured_pq["blue"].append(float(rgb_measured[2]))
+        else:
+            for idx, grayscale in enumerate(np.linspace(0, 1023, num, endpoint=True).round().astype(np.int32)):
+                grayscale = int(grayscale)
+                rgb = [grayscale, grayscale, grayscale]
+                self.proc_color_write.write_rgb(rgb, delay=0.03)
+                XYZ = self.proc_color_reader.read_XYZ()
+                XYZ_converted = m@XYZ
+                rgb_measured = XYZ_to_BT2020_PQ_rgb(XYZ_converted/10000)
+                logging.info(_("({}/{}) Output RGB: {} Measured XYZ: {} RGB: {}").format(idx+1, num, rgb, XYZ, rgb_measured*1023))
+                self.measured_pq["red"].append(float(rgb_measured[0]))
+                self.measured_pq["green"].append(float(rgb_measured[1]))
+                self.measured_pq["blue"].append(float(rgb_measured[2]))
 
         eetf_args = None
         if eetf:
@@ -1486,6 +1682,10 @@ class HDRCalibrationUI:
             self.measured_pq["blue"], target_pq=target_pq["blue_lut"])
         green_lut = generate_mhc2_lut_from_measured_pq(
             self.measured_pq["green"], target_pq=target_pq["green_lut"])
+
+        # 注：曾尝试 SDR 区间 LUT 每通道缩放（R0.98/G0.95/B0.99）修正暖色，
+        # v4 报告显示该方案以全局灰阶/蓝色退化为代价，avg 1.71->2.01，已撤销。
+        # 暖色残余改用 calibrate_chromaticity 中的灰阶不变矩阵修正（见 PATCHES.md）。
         
         
             
@@ -1560,8 +1760,13 @@ class HDRCalibrationUI:
                            "green": xyY_to_XYZ([*BT2020_xy["green"], max_nit*10000]),
                            "blue": xyY_to_XYZ([*BT2020_xy["blue"], max_nit*10000]),
                            "white": xyY_to_XYZ([*BT2020_xy["white"], max_nit*10000])}
-            target_colored_xyz = get_srgb_measure_XYZ_suit(color_gamut)
-            # target_colored_xyz.extend(get_P3D65_test_XYZ_suit(color_gamut))
+            mode = self.color_space_var.get()
+            if mode.startswith(COLOR_CARD_SRGB_24):
+                target_colored_xyz = get_srgb_24_measure_XYZ_suit(color_gamut)
+            else:
+                target_colored_xyz = get_srgb_measure_XYZ_suit(color_gamut)
+            if "+DisplayP3" in mode:
+                target_colored_xyz.extend(get_P3D65_measure_XYZ_suit(color_gamut))
             measured_colored_xyz = []
             num = len(target_colored_xyz)
             logging.info(_("Start measuring color points"))

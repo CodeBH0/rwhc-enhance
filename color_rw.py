@@ -4,7 +4,9 @@ import time
 import sys
 import re
 import os
+import threading
 import numpy as np
+
 
 class ColorReader:
     def __init__(self, args):
@@ -12,8 +14,7 @@ class ColorReader:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         execute = os.path.join(base_dir, "bin", "spotread.exe")
         print(execute, self.args_list)
-        self.instance = wexpect.spawn(execute, self.args_list,
-                                    env=os.environ.copy(), timeout=10)
+        self.instance = self._spawn_spotread(execute, self.args_list)
         self.status = "init"
         s = ""
         timeout = 15
@@ -34,7 +35,62 @@ class ColorReader:
             if "Spot read needs a calibration before continuing" in s:
                 self.status = "need_calibration"
                 break
-    
+
+    @staticmethod
+    def _spawn_spotread(execute, args_list, timeout=20):
+        """Spawn spotread through wexpect without ever hanging forever.
+
+        wexpect.spawn() launches a helper `python -m wexpect` console reader that
+        injects keystrokes into spotread's console (spotread does not read from
+        stdin). If that helper fails to come up for any reason, spawn() would
+        otherwise block indefinitely, freezing the caller. Running it in a worker
+        thread with a hard deadline and killing any leftover helper processes
+        turns a hang into a clean error.
+        """
+        result = {}
+
+        def worker():
+            try:
+                result["spawn"] = wexpect.spawn(execute, args_list,
+                                                env=os.environ.copy(), timeout=10)
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            ColorReader._kill_wexpect_helpers()
+            raise TimeoutError(
+                "spawn spotread time out (wexpect console reader did not start within {}s)".format(timeout))
+        if "error" in result:
+            ColorReader._kill_wexpect_helpers()
+            raise result["error"]
+        return result["spawn"]
+
+    @staticmethod
+    def _kill_wexpect_helpers():
+        """Best-effort: kill wexpect console-reader helper processes we may have left behind.
+
+        Only processes whose command line mentions wexpect are targeted, so the
+        dogegen pattern generator (a sibling child process) is never touched.
+        """
+        try:
+            import psutil
+            me = psutil.Process(os.getpid())
+            for child in me.children(recursive=True):
+                try:
+                    cl = " ".join(child.cmdline() or []).lower()
+                except Exception:
+                    cl = ""
+                if "wexpect" in cl:
+                    try:
+                        child.kill()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def calibrate(self):
         self.instance.send("x")
         s = ""
@@ -65,7 +121,10 @@ class ColorReader:
         timeout = 30
         start = time.time()
         while 1:
-            ret = self.instance.read_nonblocking(size=1000)
+            try:
+                ret = self.instance.read_nonblocking(size=1000)
+            except wexpect.EOF:
+                raise RuntimeError("spotread exit unexpectedly during measurement")
             s += ret
             if "Place instrument on" in s:
                 for itm in s.splitlines():
@@ -77,11 +136,14 @@ class ColorReader:
             time.sleep(0.0001)
             if time.time() - start > timeout:
                 raise TimeoutError("read XYZ time out")
-        return 
+        return
 
     def terminate(self):
-        self.instance.send("q")
-        self.instance.send("q")
+        try:
+            self.instance.send("q")
+            self.instance.send("q")
+        except Exception:
+            pass
         s = ""
         timeout = 50
         start = time.time()
@@ -91,13 +153,16 @@ class ColorReader:
                 if ret:
                     s += ret
             except wexpect.EOF:
-                # print(time.time()-start)
                 print(s)
                 break
             time.sleep(0.0001)
             if time.time() - start > timeout:
-                raise TimeoutError("terminate time out")
+                break
+        # Make sure the console reader and spotread are actually gone (they would
+        # otherwise linger as orphaned processes after the parent exits).
+        self._kill_wexpect_helpers()
         return
+
 
 class ColorWriter:
     def __init__(self, mode="hdr_10"):
