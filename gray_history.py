@@ -37,6 +37,49 @@ def _parse_xyz(s):
     return np.array([float(x) for x in s.split()], dtype=float)
 
 
+def timestamped_line_dates(lines, log_path="hc.log"):
+    """Map line index -> ``datetime`` for every line starting with ``HH:MM:SS``.
+
+    The log stores only a wall-clock time, so a date has to be inferred: the
+    last timestamped line is anchored to the log file's mtime and the walk goes
+    backwards, adding a day at every place where the clock jumps back
+    (midnight wrap).  Shared by ``gray_history`` and ``color_history`` so both
+    histories agree on the dates they display.
+    """
+    times = []  # (line_idx, (h, m, s))
+    for idx, ln in enumerate(lines):
+        m = _TIME_RE.match(ln)
+        if m:
+            times.append((idx, (int(m.group(1)), int(m.group(2)), int(m.group(3)))))
+    if not times:
+        return {}
+
+    day_offsets = {}
+    day = 0
+    prev = None
+    for idx, t in times:
+        if prev is not None and t < prev:
+            day += 1
+        day_offsets[idx] = day
+        prev = t
+
+    max_day = day_offsets[times[-1][0]]
+    try:
+        mtime = datetime.fromtimestamp(os.path.getmtime(log_path))
+    except OSError:
+        mtime = datetime.now()
+    base = mtime.date() - timedelta(days=max_day)
+
+    out = {}
+    for idx, t in times:
+        d = day_offsets.get(idx, 0)
+        out[idx] = (
+            datetime(base.year, base.month, base.day, t[0], t[1], t[2])
+            + timedelta(days=d)
+        )
+    return out
+
+
 def parse_gray_runs(log_path="hc.log"):
     """Return complete PQ grayscale runs from hc.log.
 
@@ -58,34 +101,10 @@ def parse_gray_runs(log_path="hc.log"):
     with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
 
-    # Assign a date to every timestamped line.
-    times = []  # (line_idx, (h, m, s))
-    for idx, ln in enumerate(lines):
-        m = _TIME_RE.match(ln)
-        if m:
-            times.append((idx, (int(m.group(1)), int(m.group(2)), int(m.group(3)))))
-
-    day_offsets = {}
-    day = 0
-    prev = None
-    for idx, t in times:
-        if prev is not None and t < prev:
-            day += 1
-        day_offsets[idx] = day
-        prev = t
-
-    if not times:
+    # Assign a date to every timestamped line (shared with color_history).
+    dated = timestamped_line_dates(lines, log_path)
+    if not dated:
         return []
-    max_day = day_offsets[times[-1][0]]
-    try:
-        mtime = datetime.fromtimestamp(os.path.getmtime(log_path))
-    except OSError:
-        mtime = datetime.now()
-    base = mtime.date() - timedelta(days=max_day)
-
-    def line_dt(idx, t):
-        d = day_offsets.get(idx, 0)
-        return datetime(base.year, base.month, base.day, t[0], t[1], t[2]) + timedelta(days=d)
 
     runs = []
     cur = None
@@ -99,8 +118,9 @@ def parse_gray_runs(log_path="hc.log"):
         xyz = _parse_xyz(xyzstr)
         if len(xyz) != 3:
             continue
-        t = (int(h), int(mi), int(s))
-        dt = line_dt(idx, t)
+        dt = dated.get(idx)
+        if dt is None:
+            continue
 
         if cur is None:
             cur = {"num": n, "start": dt, "end": dt, "points": []}

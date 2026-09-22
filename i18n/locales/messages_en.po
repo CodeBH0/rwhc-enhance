@@ -1197,3 +1197,59 @@ msgstr ""
 #: app.py:507
 msgid "{} · {} pts"
 msgstr ""
+
+#: app.py
+msgid "CLUT (A2B0/B2A0)"
+msgstr ""
+
+#: app.py
+msgid "CLUT generation failed: {}"
+msgstr ""
+
+#: app.py
+msgid "CLUT written: {} ({}³, {:.0f} KB, interpolation error {:.3f}%)"
+msgstr ""
+
+#: app.py
+msgid "Chromaticity fit matrix (diagnostic only): {}"
+msgstr ""
+
+#: app.py
+msgid "Color sample set: {}, {} samples"
+msgstr ""
+
+#: app.py
+msgid "No instrument found"
+msgstr ""
+
+#: app.py
+msgid "Primaries not measured yet; run calibration first"
+msgstr ""
+
+#: app.py
+msgid "SDR paper white: {:.1f} nits, white test patch code: {}"
+msgstr ""
+
+#: app.py
+msgid "Spot read needs a calibration before continuing \\nPlace the instrument on its reflective white reference then click OK."
+msgstr ""
+
+#: app.py
+msgid "WhitePoint:"
+msgstr ""
+
+#: app.py
+msgid "need_calibration"
+msgstr ""
+
+#: app.py
+msgid "v7 red-move matrix: s={}, red content delta={}, white content delta={} (same delta, see comment)"
+msgstr ""
+
+#: app.py
+msgid "Spot read needs a calibration before continuing \\nPlace the instrument on its reflective white reference then click OK."
+msgstr ""
+
+#: app.py
+msgid "CLUT self-check: max interpolation error {:.3f}% (near the PCS ceiling)"
+msgstr ""

@@ -1197,3 +1197,139 @@ msgstr "{}：读取失败"
 #: app.py:507
 msgid "{} · {} pts"
 msgstr "{} · {}点"
+
+#: app.py
+msgid "CLUT (A2B0/B2A0)"
+msgstr "CLUT（A2B0/B2A0）"
+
+#: app.py
+msgid "CLUT generation failed: {}"
+msgstr "CLUT 生成失败：{}"
+
+#: app.py
+msgid "CLUT written: {} ({}³, {:.0f} KB, interpolation error {:.3f}%)"
+msgstr "已写入 CLUT：{}（{}³，{:.0f} KB，插值误差 {:.3f}%）"
+
+#: app.py
+msgid "Chromaticity fit matrix (diagnostic only): {}"
+msgstr ""
+
+#: app.py
+msgid "Color sample set: {}, {} samples"
+msgstr ""
+
+#: app.py
+msgid "No instrument found"
+msgstr ""
+
+#: app.py
+msgid "Primaries not measured yet; run calibration first"
+msgstr "尚未测量原色，请先执行校准"
+
+#: app.py
+msgid "SDR paper white: {:.1f} nits, white test patch code: {}"
+msgstr ""
+
+#: app.py
+msgid "Spot read needs a calibration before continuing \\nPlace the instrument on its reflective white reference then click OK."
+msgstr ""
+
+#: app.py
+msgid "WhitePoint:"
+msgstr ""
+
+#: app.py
+msgid "need_calibration"
+msgstr ""
+
+#: app.py
+msgid "v7 red-move matrix: s={}, red content delta={}, white content delta={} (same delta, see comment)"
+msgstr ""
+
+#: app.py
+msgid "Spot read needs a calibration before continuing \\nPlace the instrument on its reflective white reference then click OK."
+msgstr ""
+
+#: app.py
+msgid "CLUT self-check: max interpolation error {:.3f}% (near the PCS ceiling)"
+msgstr "CLUT 自检：最大插值误差 {:.3f}%（位于 PCS 上限附近）"
+
+#: app.py
+msgid "Historical color data:"
+msgstr "历史颜色数据："
+
+#: app.py
+msgid "Selected historical color data: {}"
+msgstr "已选择历史颜色数据：{}"
+
+#: app.py
+msgid "Using historical color data: {}"
+msgstr "使用历史颜色数据：{}"
+
+#: app.py
+msgid "Historical color data reused: skipped gamut and color-card measurement"
+msgstr "已复用历史颜色数据：跳过色域与色卡测量"
+
+#: app.py
+msgid "Color history refreshed: {} runs"
+msgstr "颜色历史已刷新：{} 条"
+
+#: app.py
+msgid "Failed to refresh color history: {}"
+msgstr "刷新颜色历史失败：{}"
+
+#: app.py
+msgid "Color measurement white point: {}"
+msgstr "色卡测量白点：{}"
+
+#: app.py
+msgid "CLUT colour check (A2B vs measured card): {}"
+msgstr "CLUT 颜色校验（A2B 对实测色卡）：{}"
+
+#: app.py
+msgid "CLUT colour check: mean dE ITP {:.2f} is high — the forward model deviates strongly from the measured colour card (reused historical data may come from another display or an incompatible session)"
+msgstr "CLUT 颜色校验：平均 dE ITP {:.2f} 偏高——正向模型与实测色卡偏差很大（复用的历史数据可能来自另一台显示器或不兼容的会话）"
+
+#: app.py
+msgid "Chromaticity fit matrix (diagnostic only): {}"
+msgstr "色度拟合矩阵（仅诊断，不写入 profile）：{}"
+
+#: app.py
+msgid "Color sample set: {}, {} samples"
+msgstr "色彩采样集：{}，共 {} 个采样点"
+
+#: app.py
+msgid "Historical data is enough: no colorimeter needed for this calibration"
+msgstr "历史数据已足够：本次校准不需要连接色度计"
+
+#: app.py
+msgid "Historical color data reused: skipped the post-calibration gamut re-measurement"
+msgstr "已复用历史颜色数据：跳过校准后的色域复测"
+
+#: app.py
+msgid "No colorimeter detected. Connect a colorimeter to measure color accuracy (calibration itself can run on historical data alone)."
+msgstr "未检测到色度计。测量色准需要连接色度计（校准本身只靠历史数据即可完成）。"
+
+#: app.py
+msgid "Generating CLUT for saving: {}³ grid, this can take a while (seconds to minutes)…"
+msgstr "正在生成 CLUT 以便保存：{}³ 网格，可能需要一段时间（数秒到数分钟）……"
+
+#: app.py
+msgid "ICC profile saved: {}"
+msgstr "已保存 ICC 配置文件：{}"
+
+#: app.py
+msgid "Failed to save ICC file: {}"
+msgstr "保存 ICC 文件失败：{}"
+
+#: app.py
+msgid "SDR paper white: {:.1f} nits, white test patch code: {}"
+msgstr "SDR 纸白：{:.1f} nit，白色测试块码值：{}"
+
+#: app.py
+msgid "No instrument found"
+msgstr "未找到仪器"
+
+#: app.py
+msgid "WhitePoint:"
+msgstr "白点："

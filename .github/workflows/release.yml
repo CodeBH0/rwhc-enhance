@@ -1,0 +1,111 @@
+name: Release package
+
+# Builds the downloadable package for a release tag and attaches it to the GitHub
+# Release. What goes into the package is defined by .github/scripts/release_package.py,
+# which CI and local builds share, and which verifies the archive before publishing.
+#
+# Normal flow: push a tag (e.g. `git push origin v2026.09.22`) and this workflow
+# publishes the release with `rwhc-v2026.09.22.zip` + its .sha256 next to it.
+# For a tag that predates this workflow (v2026.09.02) use "Run workflow" and pass the
+# tag name, since GitHub only runs workflows that exist at the pushed ref.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to package and publish, e.g. v2026.09.02'
+        required: true
+        type: string
+      draft:
+        description: 'Create the release as a draft instead of publishing it'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history and tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve the tag to package
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          PUSHED_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$PUSHED_REF}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::Tag '$tag' must start with 'v'."; exit 1 ;;
+          esac
+          if ! git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" >/dev/null; then
+            echo "::error::Tag '$tag' does not exist in this repository."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Packaging tag: $tag"
+
+      - name: Build and verify the package
+        run: |
+          python .github/scripts/release_package.py \
+            --tag "${{ steps.tag.outputs.tag }}" \
+            --out dist \
+            --notes dist/RELEASE_NOTES.md
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          DRAFT: ${{ github.event.inputs.draft }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "${DRAFT:-false}" = "true" ]; then args+=(--draft); fi
+          zip_file="$(ls dist/*.zip)"
+          # `gh release view` cannot see draft releases, so ask the API directly.
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Release $TAG exists — updating its notes and assets."
+            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md "${args[@]}"
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file dist/RELEASE_NOTES.md \
+              --verify-tag "${args[@]}"
+          fi
+          gh release upload "$TAG" "$zip_file" dist/*.sha256 --clobber
+          echo "--- published ---"
+          gh release view "$TAG" --json url,assets \
+            --jq '"release: " + .url, (.assets[] | "asset:   " + .name + " (" + (.size|tostring) + " bytes)")'
+
+      - name: Verify the published asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          gh release download "$TAG" --pattern '*.zip' --dir verify --clobber
+          cd verify
+          sha256sum -c "$GITHUB_WORKSPACE"/dist/*.sha256
+          echo "The uploaded asset matches the package built by this run."

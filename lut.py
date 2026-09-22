@@ -291,110 +291,107 @@ def apply_sdr_tint_compensation(lut_r, lut_g, lut_b, r_scale=1.0, g_scale=1.0, b
     lut_b = np.clip(lut_b * (1.0 + (b_scale - 1.0) * w), 0.0, 1.0)
     return lut_r, lut_g, lut_b
 
-def generate_mhc2_lut_from_measure_data(real_nit, target_pq=None, max_nit=10000, ratio=1, eetf_args=None):
+def generate_mhc2_lut_from_measured_pq(real_pq, target_pq=None):
     """
-    依据实测灰阶亮度曲线生成 PQ→PQ 的 1D LUT来校准显示器亮度响应（长度 4096）。
-    原理：用实测曲线（输入PQ→设备输出PQ）求其“近似反函数”，再按目标曲线（可选 BT.2390 EETF）
-    在 [0..1] 上采样，得到前向补偿 LUT：给定目标输出PQ，返回需要送入设备的输入PQ。
+    由实测灰阶响应反解出 Windows MHC2 的每通道 1D LUT（默认 4096 项）。
+
+    信号方向（与本项目其余部分一致，见 README / CHANGELOG）
+    ------------------------------------------------------
+    实测数据 `real_pq[k]` 是「设备收到第 k 个均匀灰度码值时，实际输出的 PQ」，
+    即显示器原生响应 `f` 在均匀码值上的采样：``real_pq = f(code_k)``，
+    ``code_k = k/(n-1)``（k=0 最暗，k=n-1 最亮，码值即送入显示器的 PQ 输入）。
+
+    MHC2 LUT 是这条响应的**反函数**：
+
+        ``lut[i] = f⁻¹(目标输出 PQ = i/(4096-1))``
+
+    即 LUT 的索引轴是「期望显示器输出的 PQ」，值是「应当送入显示器的 PQ 输入」。
+
+    实现
+    ----
+    1. 单调化：``np.maximum.accumulate`` 抹掉测量噪声造成的回落（假定真实响应不随
+       输入增加而下降；原始数组不会被就地修改）。
+    2. 求逆：在 (输出 PQ, 输入码值) 上做分段线性逆插值（``np.interp``）。
+       这取代了早期「线性重采样成 40960 点 + 最近邻反查」的做法：分段线性插值
+       精确经过每一个实测点，且不依赖「重采样点数整除」这类脆弱假设。
+    3. 超出实测范围的目标：低于最暗实测输出 → 0；高于最亮实测输出 → 截断到
+       「实测最亮点所在的码值」（见下）。
+
+    实测影响（用 hc.log 里 15 次真实灰阶 run 对比新旧算法）
+    ------------------------------------------------------
+    在显示器可达范围内（目标输出 PQ ≤ 实测峰值），新旧算法给出的 MHC2 表
+    差异极小：**平均 0.006 个 10bit 码值、最大 0.013 个码值**（约 1e-5 PQ），
+    远低于面板自身的重复性误差。也就是说旧实现的最近邻量化**本来就没有造成
+    可见的台阶**——这次改动是让实现与数学定义一致、去掉脆弱的重采样/索引运算，
+    而不是修一个用户看得见的 bug。旧实现在峰值以上还会给出比峰值更低的码值
+    （见下），那才是这里真正修掉的行为。
+
+    关于顶部截断（重要，不要改成「一律取 1.0」）
+    ---------------------------------------------
+    显示器的实测最亮点不一定在最后一个采样点上：实机 hc.log 数据里，曲线在
+    code≈814 处达到峰值，之后由于 ABL/功率限制反而略微回落（峰值 PQ 0.80057 →
+    末点 0.79955）。这段「越亮越暗」的响应是多对一的，其单调化反函数在峰值之后
+    必须保持恒定，即所有高于峰值的目标输出都取峰值处的码值。
+    若改成超峰目标一律取码值 1.0（即输入 PQ 1023），就会在整段高光里送出**实测
+    亮度更低**的码值——那是真实的偏暗误差。所以这里显式取实测最亮点。
 
     参数:
-      - real_nit: list[float] | np.ndarray
-          实测灰阶亮度（cd/m²），按输入码值从暗到亮采样（建议均匀 PQ 步进）。
-          函数内部会做非递减处理以去噪。
-      - max_nit: float = 10000
-          亮度上限裁剪（cd/m²）。实测值高于该值时按该上限换算为 PQ（防止越界）。
-      - ratio: float = 1
-          亮度缩放比。若你的 real_nit 不是以 cd/m² 存储，可用 ratio 做换算（使用 L/ratio）。
-      - eetf_args: dict | None
-          若提供则使用 BT.2390 EETF 定义目标输出曲线。需包含:
-            {
-              "source_min": 母带黑位 (nit),
-              "source_max": 母带峰值白 (nit), 
-              "monitor_min": 设备黑位 (nit),
-              "monitor_max": 设备峰值白 (nit)
-            }
-          若为 None，则目标曲线为线性 PQ ramp（恒等目标）。
+      - real_pq: 序列或 ndarray，按输入码值从暗到亮的实测输出 PQ（0..1）。
+        由 `XYZ_to_BT2020_PQ_rgb(实测 XYZ / 10000)` 得到（app.py::calibrate_pq）。
+      - target_pq: 目标输出 PQ 轴；None 时取均匀 4096 点（即 i/(4096-1)）。
 
     返回:
-      - np.ndarray, shape=(4096,), dtype=float
-          1D LUT：索引 i 表示“目标输出 PQ”= i/4095，对应的值为“应该送入设备的输入 PQ”。
+      - np.ndarray, shape=(len(target_pq) 或 4096,), dtype=float64
+        单调不减、值域 [0, 1]；`lut[0] == 0.0`。
+        `lut[-1]` 取决于面板能否达到 PQ 1.0：实测末点就是峰值时为 1.0，否则为
+        「实测峰值码值」（见上，显示器达不到的目标输出只能停在最亮码值上）。
+
+    历史数据复用（README 第 6 条）不会改变这里的语义：复用的同样是该显示器的
+    原生响应采样，只是采样时刻不同。
     """
     DEFAULT_LUT_LEN = 4096
-    real_nit = copy.deepcopy(real_nit)
-    # 去除噪声(假定显示器实际响应不会随着输入亮度增加而下降)
-    for idx, itm in enumerate(real_nit):
-        if idx == 0:
-            continue
-        if itm < real_nit[idx-1]:
-            real_nit[idx] = real_nit[idx-1]
-    monitor_real_pq = []
-    max_pq = pq_oetf(max_nit/ratio)
-    for idx, itm in enumerate(real_nit):
-        if itm <= max_nit:
-            pq = pq_oetf(itm/ratio)
-        else:
-            pq = max_pq
-        monitor_real_pq.append(pq)
-    if not target_pq:
-        target_pq = np.linspace(0, 1, DEFAULT_LUT_LEN)
+
+    measured = np.asarray(real_pq, dtype=np.float64).ravel()
+    if measured.size < 2:
+        raise ValueError("generate_mhc2_lut_from_measured_pq 至少需要 2 个实测点")
+    if not np.all(np.isfinite(measured)):
+        raise ValueError("实测 PQ 曲线包含非有限值")
+
+    # 1) 单调化（不就地修改调用方的数据；app.py 之后还要用原始曲线绘图）
+    measured = np.maximum.accumulate(np.clip(measured, 0.0, 1.0))
+    codes = np.linspace(0.0, 1.0, measured.size)
+
+    if target_pq is None:
+        target_pq = np.linspace(0.0, 1.0, DEFAULT_LUT_LEN)
     else:
-        target_pq = np.array(target_pq, dtype=float)
-    # target_pq = np.clip(target_pq*1.1, 0.0, 1.0)
-    if eetf_args:
-        target_pq_eetf = []
-        lt = len(target_pq)
-        for idx in range(lt):
-            V = idx/(lt-1)
-            Lb = eetf_args["source_min"]
-            Lw = eetf_args["source_max"]
-            Lmin = eetf_args["monitor_min"]
-            Lmax = eetf_args["monitor_max"]
-            NV_index = int(round(float(bt2390eetf(V, Lb, Lw, Lmin, Lmax))*(lt-1)))
-            NV = target_pq[NV_index]
-            target_pq_eetf.append(NV)
-        target_pq = np.array(target_pq_eetf)
-    
-    m, k1 = max_uniform_target(len(monitor_real_pq), DEFAULT_LUT_LEN*10)
-    monitor_real_pq = linear_interpolate(np.array(monitor_real_pq), m)
-    convert_idx = []
-    len_idx_real = m
-    for itm in target_pq:
-        idx= find_nearest_idx(monitor_real_pq, itm)
-        pq = idx/(len_idx_real-1)
-        convert_idx.append(pq)
-    if not eetf_args:
-        convert_idx[0] = 0
-        convert_idx[1] = 1
-    return np.array(convert_idx)
+        target_pq = np.asarray(target_pq, dtype=np.float64).ravel()
 
-
-def generate_mhc2_lut_from_measured_pq(real_pq, target_pq=None):
-    DEFAULT_LUT_LEN = 4096
-    for idx, itm in enumerate(real_pq):
-        if idx == 0:
-            continue
-        if itm < real_pq[idx-1]:
-            real_pq[idx] = real_pq[idx-1]
-
-    if not target_pq:
-        target_pq = np.linspace(0, 1, DEFAULT_LUT_LEN)
-    else:
-        target_pq = np.array(target_pq, dtype=float)
-    
-    m, k1 = max_uniform_target(len(real_pq), DEFAULT_LUT_LEN*10)
-    real_pq = linear_interpolate(np.array(real_pq), m)
-    convert_idx = []
-    len_idx_real = m
-    for itm in target_pq:
-        idx= find_nearest_idx(real_pq, itm)
-        pq = idx/(len_idx_real-1)
-        convert_idx.append(pq)
-    return np.array(convert_idx)
+    # 2) 实测最亮点之后的响应是多对一的，反函数在那里必须保持恒定：
+    #    只对峰值（含）之前的单调段求逆，超峰目标一律取峰值码值。
+    peak_idx = 0
+    for i in range(1, measured.size):
+        if measured[i] > measured[peak_idx]:
+            peak_idx = i
+    if peak_idx < 1:
+        # 退化曲线（完全测不到亮度变化，例如整条曲线都是 0）：没有可反解的信息，
+        # 返回恒等 LUT（不改变任何码值），而不是抛异常或猜一条曲线。
+        return np.clip(target_pq, 0.0, 1.0).copy()
+    return np.interp(target_pq, measured[:peak_idx + 1], codes[:peak_idx + 1],
+                     left=0.0, right=codes[peak_idx])
 
 
 def eetf_from_lut(lut, eetf_args=None):
     """
-    从现有的 LUT 生成 EETF 曲线
+    从现有的 LUT 生成 EETF 曲线。
+
+    仅供 `tools/cyberpunk2077_hdr_fixer.py` 这类离线工具使用：它把一条已存在的
+    MHC2 LUT 重新采样到 BT.2390 EETF 目标轴上。
+
+    注意：**发布版校色路径不使用 EETF**。app.py 的 `calibrate_pq()` 只用实测响应
+    反解 MHC2（`generate_mhc2_lut_from_measured_pq`），EETF 参数目前只影响
+    `color_history.peak_min_luminance_from_xyz` 的峰值/黑场规则；历史上那个
+    「按 EETF 重采样 + 最近邻反查」的实现（`generate_mhc2_lut_from_measure_data`）
+    因为写错了端点、且与校色路径算法不一致，已经删除，不要再恢复。
     """
     TARGET_LEN = 4096
     idx_target = np.linspace(0, 1, TARGET_LEN)

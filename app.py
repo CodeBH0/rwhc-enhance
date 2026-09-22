@@ -4,11 +4,27 @@ from matrix import *
 from convert_utils import *
 from delteE import *
 from icc_rw import ICCProfile
+from clut_icc import (
+    CLUT_FORMAT_MFT2,
+    CLUT_GRID_CHOICES,
+    CLUT_GRID_DEFAULT,
+    build_model_from_calibration,
+    make_clut_tags,
+    write_clut_tags,
+)
 from color_test_suit import *
 from color_rw import ColorReader, ColorWriter
 from log import logging, TextHandler
 from i18n.i18n_loader import _
 from gray_history import parse_gray_runs
+from color_history import (
+    parse_color_runs,
+    gamut_xyz_from_run as color_run_gamut_xyz,
+    peak_min_luminance as color_run_peak_min,
+    peak_min_luminance_from_xyz as color_run_peak_min_xyz,
+    run_label as color_run_label,
+    run_summary as color_run_summary,
+)
 
 from win_display import (
     get_all_display_config,
@@ -62,10 +78,21 @@ class HDRCalibrationUI:
         self.gray_history_runs = []
         self.selected_gray_run = None
 
+        # Historical colour data (parsed from hc.log): primaries + white/black +
+        # the colour-card run of an earlier calibration.  Reusing it feeds the
+        # CLUT's forward model (primaries matrix) without re-measuring.
+        self.color_history_runs = []
+        self.selected_color_run = None
+        self.reused_color_run = None
+        self.reused_color_card = None
+
         self.proc_color_write = None
         self.proc_color_reader = None
 
         self.icc_change_delay = 0
+
+        # CLUT 标签缓存（键 = 网格点数 + 模型指纹），避免预览/保存重复计算
+        self._clut_cache = None
 
         self.eetf_args = {
             "source_max": 10000,
@@ -112,6 +139,11 @@ class HDRCalibrationUI:
             self.gray_history_runs = parse_gray_runs(self.log_path)
         except Exception:
             self.gray_history_runs = []
+        # Same for the historical colour runs (primaries + colour card).
+        try:
+            self.color_history_runs = parse_color_runs(self.log_path)
+        except Exception:
+            self.color_history_runs = []
 
         self.build_ui()
         self.init_logging()
@@ -135,7 +167,9 @@ class HDRCalibrationUI:
         logging.info(_("Application started"))
 
     def build_ui(self):
-        self.root.geometry("960x1000")
+        # 1000px 在加入「历史颜色数据」一行后会挤掉日志框底部（requested height
+        # 约 1042px），因此把默认高度提到 1050 留出余量；窗口仍可自由缩放。
+        self.root.geometry("960x1050")
         self.root.configure(bg="#f8f8f8")
         self.root.protocol("WM_DELETE_WINDOW", self.on_exit)
         intro_font = ("Microsoft YaHei", 16)
@@ -171,7 +205,7 @@ class HDRCalibrationUI:
         except tk.TclError:
             pass
 
-        top_bar = tk.Frame(root, bg="#f8f8f8")
+        top_bar = tk.Frame(self.root, bg="#f8f8f8")
         top_bar.pack(fill="x", padx=36, pady=(0, 4))
 
         tk.Frame(top_bar, bg="#dcdcdc", height=1).pack(fill="x", side="bottom")
@@ -200,7 +234,7 @@ class HDRCalibrationUI:
             _("Colorimeter driver: argyllcms spotread")
         ])
         tk.Label(
-            root,
+            self.root,
             text=intro,
             font=intro_font,
             justify="left",
@@ -211,7 +245,7 @@ class HDRCalibrationUI:
             wraplength=2150,
         ).pack(pady=(0, 10), padx=36, anchor="w")
 
-        tk.Frame(root, height=1, bg="#dcdcdc").pack(fill="x", padx=36, pady=(4, 8))
+        tk.Frame(self.root, height=1, bg="#dcdcdc").pack(fill="x", padx=36, pady=(4, 8))
 
         style.configure(
             "TButton", font=("Microsoft YaHei", 16), padding=(12, 8), width=20
@@ -223,7 +257,7 @@ class HDRCalibrationUI:
         )
 
 
-        button_frame = tk.Frame(root, bg="#f8f8f8")
+        button_frame = tk.Frame(self.root, bg="#f8f8f8")
         button_frame.pack(pady=20, anchor="w", padx=36)
         self.root.option_add("*TCombobox*Listbox*Font", ("Microsoft YaHei", 15))
 
@@ -380,6 +414,27 @@ class HDRCalibrationUI:
         if self.gray_history_choices:
             self.gray_history_var.set(self.gray_history_choices[0])
 
+        # CLUT（ICC 标准多维查找表）输出选项。
+        # 原有的矩阵 + MHC2 标签始终保留；这里只决定是否额外写入 A2B0/B2A0。
+        clut_frame = tk.Frame(button_frame, bg="#f8f8f8")
+        clut_frame.grid(row=4, column=2, sticky="we", padx=(0, 0), pady=(0, 12))
+        self.clut_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            clut_frame,
+            text=_("CLUT (A2B0/B2A0)"),
+            variable=self.clut_var,
+            style="TCheckbutton",
+        ).pack(side="left")
+        self.clut_grid_var = tk.StringVar(value=str(CLUT_GRID_DEFAULT))
+        ttk.Combobox(
+            clut_frame,
+            textvariable=self.clut_grid_var,
+            values=[str(g) for g in CLUT_GRID_CHOICES],
+            font=("Microsoft YaHei", 14),
+            width=4,
+            state="readonly",
+        ).pack(side="left", padx=(8, 0))
+
         self.white_point_var = tk.StringVar(value="0.3127,0.3290")
         tk.Label(
             button_frame,
@@ -418,6 +473,40 @@ class HDRCalibrationUI:
             row=5, column=2, sticky="w", padx=(0, 0), pady=(0, 14)
         )
 
+        # 历史颜色数据（原色/白点 + 色卡）选择器：同一台显示器做多个色温 profile 时，
+        # 色域与色卡测量同样不必每次重做——它们由 panel 原生响应决定，与目标白点无关。
+        self.color_history_var = tk.StringVar()
+        self.color_history_choices = self._build_color_history_choices()
+        tk.Label(
+            button_frame,
+            text=_("Historical color data:"),
+            font=("Microsoft YaHei", 16),
+            bg="#f8f8f8",
+        ).grid(row=6, column=0, sticky="w", padx=(0, 10), pady=(0, 12))
+        color_history_frame = tk.Frame(button_frame, bg="#f8f8f8")
+        color_history_frame.grid(
+            row=6, column=0, columnspan=2, sticky="we", padx=(120, 33), pady=(0, 12)
+        )
+        self.color_history_menu = ttk.Combobox(
+            color_history_frame,
+            textvariable=self.color_history_var,
+            values=self.color_history_choices,
+            font=("Microsoft YaHei", 16),
+            width=30,
+            state="readonly",
+        )
+        self.color_history_menu.pack(side="left", fill="x", expand=True)
+        self.color_history_menu.bind("<<ComboboxSelected>>", self.on_color_history_selected)
+        ttk.Button(
+            color_history_frame,
+            text=_("Refresh"),
+            command=self.refresh_color_history,
+            style="TButton",
+            width=10,
+        ).pack(side="left", padx=(8, 0))
+        if self.color_history_choices:
+            self.color_history_var.set(self.color_history_choices[0])
+
         ttk.Button(
             button_frame,
             text=_("Calibrate"),
@@ -425,7 +514,7 @@ class HDRCalibrationUI:
             style="TButton",  
             
             width=20,
-        ).grid(row=6, column=0, padx=(0, 30), pady=(10, 0), sticky="w")
+        ).grid(row=7, column=0, padx=(0, 30), pady=(10, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -433,7 +522,7 @@ class HDRCalibrationUI:
             command=self.measure_pq,
             style="TButton",
             width=20,
-        ).grid(row=6, column=1, padx=(0, 30), pady=(10, 0), sticky="w")
+        ).grid(row=7, column=1, padx=(0, 30), pady=(10, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -441,7 +530,7 @@ class HDRCalibrationUI:
             command=self.generate_and_save_icc,
             style="TButton",
             width=20,
-        ).grid(row=6, column=2, pady=(10, 0), sticky="w")
+        ).grid(row=7, column=2, pady=(10, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -449,14 +538,14 @@ class HDRCalibrationUI:
             command=lambda: os.system("start devmgmt.msc"),
             style="TButton",
             width=20,
-        ).grid(row=7, column=0, columnspan=2, pady=(20, 0), sticky="w")
+        ).grid(row=8, column=0, columnspan=2, pady=(20, 0), sticky="w")
         ttk.Button(
             button_frame,
             text=_("Open Windows Services"),
             command=lambda: os.system("start services.msc"),
             style="TButton",
             width=20,
-        ).grid(row=7, column=1, columnspan=2, pady=(20, 0), sticky="w")
+        ).grid(row=8, column=1, columnspan=2, pady=(20, 0), sticky="w")
 
         ttk.Button(
             button_frame,
@@ -464,9 +553,9 @@ class HDRCalibrationUI:
             command=lambda: webbrowser.open(self.argyll_download_url),
             style="TButton",
             width=20,
-        ).grid(row=7, column=2, columnspan=2, pady=(20, 0), sticky="w")
+        ).grid(row=8, column=2, columnspan=2, pady=(20, 0), sticky="w")
 
-        log_frame = ttk.LabelFrame(root, text=_("Log"))
+        log_frame = ttk.LabelFrame(self.root, text=_("Log"))
         log_frame.pack(fill="both", expand=True, padx=36, pady=(0, 20))
         self.log_text = tk.Text(
             log_frame,
@@ -542,6 +631,93 @@ class HDRCalibrationUI:
             self.gray_history_var.set(self.gray_history_choices[0])
         self.on_gray_history_selected()
         logging.info(_("Gray history refreshed: {} runs").format(len(self.gray_history_runs)))
+
+    # ------------------------------------------------------------------
+    # 历史颜色数据（原色/白点 + 色卡）
+    # ------------------------------------------------------------------
+    def _color_run_label(self, run):
+        """Human-readable label for a historical colour run."""
+        return color_run_label(run)
+
+    def _build_color_history_choices(self):
+        """First item is always 'live measurement'; then one entry per complete run."""
+        choices = [_("Live measurement")]
+        for run in self.color_history_runs:
+            choices.append(self._color_run_label(run))
+        return choices
+
+    def on_color_history_selected(self, event=None):
+        """Combobox changed: remember the picked historical colour run (or None)."""
+        label = self.color_history_var.get()
+        self.selected_color_run = None
+        if label == _("Live measurement"):
+            return
+        for run in self.color_history_runs:
+            if self._color_run_label(run) == label:
+                self.selected_color_run = run
+                logging.info(_("Selected historical color data: {}").format(label))
+                return
+
+    def refresh_color_history(self):
+        """Re-parse hc.log and refresh the colour combobox (keep selection if valid)."""
+        try:
+            self.color_history_runs = parse_color_runs(self.log_path)
+        except Exception as e:
+            logging.error(_("Failed to refresh color history: {}").format(e))
+            self.color_history_runs = []
+        prev = self.color_history_var.get() if hasattr(self, "color_history_var") else ""
+        self.color_history_choices = self._build_color_history_choices()
+        if hasattr(self, "color_history_menu"):
+            self.color_history_menu["values"] = self.color_history_choices
+        if prev in self.color_history_choices:
+            self.color_history_var.set(prev)
+        else:
+            self.color_history_var.set(self.color_history_choices[0])
+        self.on_color_history_selected()
+        logging.info(_("Color history refreshed: {} runs").format(len(self.color_history_runs)))
+
+    def _apply_color_run(self, run):
+        """
+        把一条历史颜色数据还原成本次校准的状态。
+
+        复用内容与本次「实时测量」完全一致：
+          · 六个色域测试点（原色/白点/纸白/黑）→ self.measure_gamut_xyz
+          · 激活黑（二分搜索结果）→ min_activated_black
+          · 峰值/黑场亮度 → MHC2 与 lumi 标签
+          · rXYZ/gXYZ/bXYZ/wtpt + sRGB TRC + MHC2 写回 profile 句柄
+          · 色卡样本 → 供 CLUT 正向模型校验用（self.reused_color_card）
+        这些都发生在 `measure_gamut_before` 真正测量时同一条代码路径上。
+        """
+        gamut = color_run_gamut_xyz(run)
+        max_lumi, min_lumi = color_run_peak_min(run, self.eetf_var.get(), self.eetf_args)
+        # `_apply_gamut_data` 会把六个色域点写入 self.measure_gamut_xyz，
+        # 并按实时测量的同一套逻辑写 lumi / rXYZ..wtpt / TRC / MHC2。
+        self._apply_gamut_data(gamut, min_lumi, max_lumi)
+
+        self.reused_color_run = run
+        card = []
+        for _idx, rgb, _target, measured in run["points"]:
+            code = (np.asarray(rgb, dtype=float) / 1023.0).tolist()
+            xyz_nits = (np.asarray(measured, dtype=float) * 10000.0).tolist()
+            card.append((code, xyz_nits))
+        self.reused_color_card = card or None
+        # Keep the app's own state consistent with a live run, so anything that
+        # reads measured_xyz / target_xyz after calibration sees the reuse.
+        self.target_xyz = [list(np.asarray(t, float)) for _i, _r, t, _m in run["points"]]
+        self.measured_xyz = [list(np.asarray(m, float)) for _i, _r, _t, m in run["points"]]
+
+    def _history_only_calibration(self):
+        """
+        两个历史数据都选中时，本次校准完全不需要测量。
+
+        · 灰阶曲线来自「历史灰阶数据」（`calibrate_pq` 走复用分支）；
+        · 原色/白点/纸白/黑场与色卡来自「历史颜色数据」（`_apply_color_run`）；
+        · 「校准后」重测（`measure_gamut_after`）也被复用分支取代。
+
+        因此可以不启动 dogegen 与 spotread，直接产出 ICC。
+        """
+        return (self.selected_gray_run is not None
+                and self.selected_color_run is not None)
 
     def run_in_thread(self, worker, on_done):
         """
@@ -1115,6 +1291,12 @@ class HDRCalibrationUI:
         name_without_ext = os.path.splitext(filename)[0]
         desc = [{"lang": "en", "country": "US", "text": name_without_ext}]
         self.icc_handle.write_desc(desc)
+        # 预览必须与最终保存的文件一致，所以这里也写入 CLUT（结果有缓存，
+        # 只有校准数据变了才会重新生成）。
+        try:
+            self.write_clut_if_enabled()
+        except Exception as exc:
+            logging.error(_("CLUT generation failed: {}").format(exc))
         self.icc_handle.rebuild()
         self.icc_handle.save(path)
 
@@ -1155,39 +1337,61 @@ class HDRCalibrationUI:
         logging.info(_("SDR paper white: {:.1f} nits, white test patch code: {}").format(
             paper_white, paper_code))
 
-        self.proc_color_write = ColorWriter()
-        args = self.get_spotread_args()
-        self.proc_color_reader = ColorReader(args)
-        if self.proc_color_reader.status == "need_calibration":
-            while 1:
-                msg = _("Spot read needs a calibration before continuing \nPlace the instrument on its reflective white reference then click OK.")
-                answer = tk.messagebox.askokcancel(_("need_calibration"), msg)
-                if answer:
-                    self.proc_color_reader.calibrate()
-                else:
-                    logging.info(_("User canceled calibration"))
-                    self.clean_color_rw_process()
-                    self.unfreeze_ui()
-                    return
-                if self.proc_color_reader.status != "need_calibration":
-                    break
-        # Send command to the child process
-        self.proc_color_write.write_rgb([800, 800, 800])
-        msg = _("Move the white window to the target screen, resize it to fully cover the meter, place the meter on the window, then click OK.")
-        answer = tk.messagebox.askokcancel(_("Place the colorimeter"), msg)
-        if not answer:
-            logging.info(_("User canceled calibration"))
-            self.clean_color_rw_process()
-            self.unfreeze_ui()
-            return
+        # 灰阶曲线与颜色数据都选了历史数据时，本次校准不需要任何测量，
+        # 因此不启动 dogegen / spotread，也不弹出「放置色度计」对话框。
+        # （之前这里无条件构造 spotread，未接色度计时会直接报错失败。）
+        need_meter = not self._history_only_calibration()
+        if need_meter:
+            self.proc_color_write = ColorWriter()
+            args = self.get_spotread_args()
+            self.proc_color_reader = ColorReader(args)
+            if self.proc_color_reader.status == "need_calibration":
+                while 1:
+                    msg = _("Spot read needs a calibration before continuing \nPlace the instrument on its reflective white reference then click OK.")
+                    answer = tk.messagebox.askokcancel(_("need_calibration"), msg)
+                    if answer:
+                        self.proc_color_reader.calibrate()
+                    else:
+                        logging.info(_("User canceled calibration"))
+                        self.clean_color_rw_process()
+                        self.unfreeze_ui()
+                        return
+                    if self.proc_color_reader.status != "need_calibration":
+                        break
+            # Send command to the child process
+            self.proc_color_write.write_rgb([800, 800, 800])
+            msg = _("Move the white window to the target screen, resize it to fully cover the meter, place the meter on the window, then click OK.")
+            answer = tk.messagebox.askokcancel(_("Place the colorimeter"), msg)
+            if not answer:
+                logging.info(_("User canceled calibration"))
+                self.clean_color_rw_process()
+                self.unfreeze_ui()
+                return
+        else:
+            logging.info(_("Historical data is enough: no colorimeter needed for this calibration"))
 
-        self.init_base_icc()
         origin_preview_status = self.preview_var.get()
-
         self.icc_change_delay = 0.5
-    
+
+        # 历史颜色数据：整段的色域测量 + 色卡测量都可以跳过。
+        # 复用的数据是原始实测 XYZ，进入的是与实时测量完全相同的后续链路，
+        # 所以 profile / CLUT 的产出与重新测量一致（只是省掉了测量时间）。
+        self.reused_color_run = None
+        self.reused_color_card = None
+        reuse_color = self.selected_color_run
+        if reuse_color is not None:
+            logging.info(_("Using historical color data: {}").format(self._color_run_label(reuse_color)))
+            logging.info(color_run_summary(reuse_color))
+
         def calibrate_control():
-            self.measure_gamut_before()
+            # 注意顺序：`init_base_icc()` 会把 profile 重置为模板，所以历史颜色数据必须
+            # 在那之后再写入（与实时路径中 measure_gamut_before 的位置一致）。
+            self.init_base_icc()
+            if reuse_color is not None:
+                self._apply_color_run(reuse_color)
+                logging.info(_("Historical color data reused: skipped gamut and color-card measurement"))
+            else:
+                self.measure_gamut_before()
             self.calibrate_pq()
             # self.calibrate_white_by_lut()
             self.calibrate_chromaticity()
@@ -1210,6 +1414,8 @@ class HDRCalibrationUI:
             # A fresh PQ measurement was just logged: make it selectable for
             # the next calibration (e.g. after changing the color temperature).
             self.refresh_gray_history()
+            # A live colour measurement was just logged as well.
+            self.refresh_color_history()
             if isinstance(result, Exception):
                 raise result
             
@@ -1218,30 +1424,17 @@ class HDRCalibrationUI:
 
     def measure_gamut_before(self):
         self.preview_var.set(True)
-        max_lumi = 0
-        min_lumi = 0
         for color, rgb in self.gamut_test_rgb.items():
             self.proc_color_write.write_rgb(rgb, delay=0.1)
             XYZ = self.proc_color_reader.read_XYZ()
             logging.info(_("Color {} measured XYZ: {}").format(color, XYZ))
-            eetf = self.eetf_var.get()
-            # If EETF is enabled, 
-            # set the luminance parameters in the ICC 
-            # to avoid double mapping.
-            if color == "white":
-                if eetf and self.eetf_args["monitor_max"] != 10000 and \
-                    self.eetf_args["monitor_max"] is not None:
-                    max_lumi = self.eetf_args["monitor_max"]
-                else:
-                    max_lumi = XYZ[1]
-            if color == "black":
-                if eetf and self.eetf_args["monitor_min"] != 0:
-                    min_lumi = 0
-                else:
-                    min_lumi = XYZ[1]
             self.measure_gamut_xyz[color] = XYZ
-            
-            
+
+        # Peak/black luminance rules live in one helper so a reused historical
+        # colour run produces exactly the same MHC2 / lumi data as a live run.
+        max_lumi, min_lumi = color_run_peak_min_xyz(
+            self.measure_gamut_xyz, self.eetf_var.get(), self.eetf_args)
+
         start_lumi = self.measure_gamut_xyz["black"][1]
         delta = max(start_lumi * 0.01, 0.0005)  # Adjust threshold as needed
         logging.info(_("Start binary search for activated black: start_lumi={} delta={}").format(start_lumi, delta))
@@ -1276,6 +1469,22 @@ class HDRCalibrationUI:
             else:
                 logging.info(_("Activated black not found (grayscale differences may be below threshold)"))
 
+        self._apply_gamut_data(self.measure_gamut_xyz, min_lumi, max_lumi)
+
+    def _apply_gamut_data(self, gamut_xyz, min_lumi, max_lumi):
+        """
+        把一组色域测量结果（实测或复用历史数据）写进 profile。
+
+        `measure_gamut_before` / `measure_gamut_after` 与历史颜色数据复用
+        (`_apply_color_run`) 共用这一段：峰值/黑场亮度 → MHC2 + lumi 标签，
+        实测原色 → rXYZ/gXYZ/bXYZ/wtpt，TRC → sRGB EOTF。
+
+        `gamut_xyz` 为 {red,green,blue,white,white_paper,black,...} 的实测 XYZ；
+        `min_lumi` / `max_lumi` 由调用方按 EETF 规则决定（见峰值亮度处理）。
+        """
+        for key, xyz in gamut_xyz.items():
+            self.measure_gamut_xyz[key] = xyz
+
         """
         FIXME 
         The full‑frame luminance of an OLED may be lower than the maximum luminance of a patch, 
@@ -1286,7 +1495,7 @@ class HDRCalibrationUI:
         self.MHC2["min_luminance"] = min_lumi
         self.MHC2["peak_luminance"] = peak_lumi
         self.icc_handle.write_XYZType("lumi", [[max_lumi, max_lumi, max_lumi]])
-        
+
         r, g, b, w = build_primaries_xyz_tags(
             self.measure_gamut_xyz["red"],
             self.measure_gamut_xyz["green"],
@@ -1302,71 +1511,87 @@ class HDRCalibrationUI:
         # 会导致按 profile 做 SDR 预测/渲染时色度偏移。
         srgb_trc = {'type': 'curve', 'values': srgb_encode(np.linspace(0, 1, 1024)).tolist()}
         self.icc_handle.write_rgbTRC({'rTRC': srgb_trc, 'gTRC': srgb_trc, 'bTRC': srgb_trc})
-        
+
         self.icc_handle.write_MHC2(self.MHC2)
 
         logging.info(_("Gamut measurement finished"))
     
     def measure_gamut_after(self):
         self.preview_var.set(True)
-        max_lumi = 0
-        min_lumi = 0
+
+        # 历史颜色数据复用：不做「校准后」重测。
+        # 这一步只用实测原色重算与 measure_gamut_before 完全相同的 profile 标签
+        # （rXYZ/gXYZ/bXYZ/wtpt、lumi、MHC2 峰值/黑场），而复用的原色本来就会写进
+        # 同样的标签，所以结果与重测一致——但没有必要再测一遍（既省时间，
+        # 也让「两个历史数据都选中时不接色度计」成为可能）。
+        if getattr(self, "reused_color_run", None) is not None:
+            logging.info(_("Historical color data reused: skipped the post-calibration gamut re-measurement"))
+            max_lumi = self.MHC2.get("peak_luminance", 0.0)
+            min_lumi = self.MHC2.get("min_luminance", 0.0)
+            # 明亮模式：与重测路径一致地做亮度补偿
+            if self.bright_var.get():
+                max_lumi, min_lumi = self._apply_bright_luminance()
+            self._apply_gamut_data(self.measure_gamut_xyz, min_lumi, max_lumi)
+            return
+
         for color, rgb in self.gamut_test_rgb.items():
             self.proc_color_write.write_rgb(rgb, delay=0.1)
             XYZ = self.proc_color_reader.read_XYZ()
             logging.info(_("Color {} measured XYZ: {}").format(color, XYZ))
-            if color == "white":
-                max_lumi = XYZ[1]
-            if color == "black":
-                min_lumi = XYZ[1]
             self.measure_gamut_xyz[color] = XYZ
 
-        """
-        FIXME 
-        The full‑frame luminance of an OLED may be lower than the maximum luminance of a patch, 
-        but currently I can't get dogegen to display in fullscreen.
-        """
+        max_lumi = self.measure_gamut_xyz["white"][1]
+        min_lumi = self.measure_gamut_xyz["black"][1]
+
+        # 明亮模式的亮度补偿（与历史数据复用共用同一段，保证两条路径产出相同）
         if self.bright_var.get():
-            lut = generate_inversed_lut(generate_bright_pq_lut())
-            bright_lut_inv = {"red_lut": lut.tolist(),
-                              "green_lut": lut.tolist(),
-                              "blue_lut": lut.tolist()}
+            max_lumi, min_lumi = self._apply_bright_luminance()
 
-            white_rgb_fix = apply_lut(XYZ_to_BT2020_PQ_rgb(self.measure_gamut_xyz["white"]/10000), bright_lut_inv)
-            black_rgb_fix = apply_lut(XYZ_to_BT2020_PQ_rgb(self.measure_gamut_xyz["black"]/10000), bright_lut_inv)
-            white_xyz_fix = BT2020_PQ_rgb_to_XYZ(white_rgb_fix)
-            black_xyz_fix = BT2020_PQ_rgb_to_XYZ(black_rgb_fix)
-            logging.info(_("Brightness-compensated white RGB: {} XYZ: {}").format(white_rgb_fix, white_xyz_fix))
-            logging.info(_("Brightness-compensated black RGB: {} XYZ: {}").format(black_rgb_fix, black_xyz_fix))
-            max_lumi = white_xyz_fix[1]*10000
-            min_lumi = black_xyz_fix[1]*10000
-        peak_lumi = max_lumi
-        logging.info(_("Writing max full-frame luminance {}, peak luminance {}, min luminance {}").format(max_lumi, peak_lumi, min_lumi))
-        self.MHC2["min_luminance"] = min_lumi
-        self.MHC2["peak_luminance"] = peak_lumi
-        self.icc_handle.write_XYZType("lumi", [[max_lumi, max_lumi, max_lumi]])
-        
-        r, g, b, w = build_primaries_xyz_tags(
-            self.measure_gamut_xyz["red"],
-            self.measure_gamut_xyz["green"],
-            self.measure_gamut_xyz["blue"],
-            self.measure_gamut_xyz["white_paper"])
-        logging.info(_("Writing RGBW XYZ:\n {r}\n {g}\n {b}\n {w}").format(r=r, g=g, b=b, w=w))
-        self.icc_handle.write_XYZType("rXYZ", [r])
-        self.icc_handle.write_XYZType("gXYZ", [g])
-        self.icc_handle.write_XYZType("bXYZ", [b])
-        self.icc_handle.write_XYZType("wtpt", [w])
-        srgb_trc = {'type': 'curve', 'values': srgb_encode(np.linspace(0, 1, 1024)).tolist()}
-        self.icc_handle.write_rgbTRC({'rTRC': srgb_trc, 'gTRC': srgb_trc, 'bTRC': srgb_trc})
-        
-        self.icc_handle.write_MHC2(self.MHC2)
+        # 同一段写入逻辑（与 measure_gamut_before / 历史颜色数据复用共用）
+        self._apply_gamut_data(self.measure_gamut_xyz, min_lumi, max_lumi)
 
-        logging.info(_("Gamut measurement finished"))
+    def _apply_bright_luminance(self):
+        """
+        明亮模式（`bright_var`）下的亮度补偿：返回 (max_lumi, min_lumi)。
+
+        实测峰值/黑场先按反向明亮 LUT 折算，再写进 MHC2 与 lumi。
+        这一步原本内联在 `measure_gamut_after` 里；抽出来是为了让
+        「历史颜色数据复用」跳过复测时也能算出同样的结果（否则复用与重测
+        在开启明亮模式时不一致）。
+        """
+        lut = generate_inversed_lut(generate_bright_pq_lut())
+        bright_lut_inv = {"red_lut": lut.tolist(),
+                          "green_lut": lut.tolist(),
+                          "blue_lut": lut.tolist()}
+
+        white_rgb_fix = apply_lut(XYZ_to_BT2020_PQ_rgb(self.measure_gamut_xyz["white"]/10000), bright_lut_inv)
+        black_rgb_fix = apply_lut(XYZ_to_BT2020_PQ_rgb(self.measure_gamut_xyz["black"]/10000), bright_lut_inv)
+        white_xyz_fix = BT2020_PQ_rgb_to_XYZ(white_rgb_fix)
+        black_xyz_fix = BT2020_PQ_rgb_to_XYZ(black_rgb_fix)
+        logging.info(_("Brightness-compensated white RGB: {} XYZ: {}").format(white_rgb_fix, white_xyz_fix))
+        logging.info(_("Brightness-compensated black RGB: {} XYZ: {}").format(black_rgb_fix, black_xyz_fix))
+        return white_xyz_fix[1]*10000, black_xyz_fix[1]*10000
 
     def calibrate_chromaticity(self):
         # measure and build matrix
         self.preview_var.set(True)
         logging.info(_("Start color measurement and generate matrix"))
+
+        # 历史颜色数据复用：整段色卡测量都跳过，直接沿用选中 run 的
+        # 目标/实测 XYZ（数据在 _apply_color_run 里已经装好）。
+        if self.reused_color_run is not None:
+            run = self.reused_color_run
+            self.measured_xyz = [np.array(v, dtype=float) for v in self.measured_xyz]
+            self.target_xyz = [np.array(v, dtype=float) for v in self.target_xyz]
+            matrix = fit_XYZ2XYZ_wlock_dropY(
+                self.measured_xyz, self.target_xyz,
+                self.measured_xyz[-1], self.target_xyz[-1])
+            logging.info(_("Chromaticity fit matrix (diagnostic only): {}").format(matrix.flatten().tolist()))
+            self.MHC2["matrix"] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            self.icc_handle.write_MHC2(self.MHC2)
+            logging.info(_("Color matrix measurement finished, matrix: {}").format(self.MHC2["matrix"]))
+            return
+
         paper_white = self.get_paper_white_nit()
         mode = self.color_space_var.get()
         if mode.startswith(COLOR_CARD_SRGB_24):
@@ -1381,9 +1606,12 @@ class HDRCalibrationUI:
         self.measured_xyz = []
         i = 1
         l = len(self.target_xyz)
-        
+
         wp = [float(x.strip()) for x in self.white_point_var.get().split(",")]
         m = calculate_bradford_matrix(wp, D65_WHITE_POINT)
+        # 记录本次色卡的适配白点：`color_history` 会读这一行，方便日后复用时
+        # 判断历史数据是在哪个白点下测的（色卡本身不做白点适配，仅作诊断信息）。
+        logging.info(_("Color measurement white point: {}").format(self.white_point_var.get()))
         for itm in self.target_xyz:
             pq = XYZ_to_BT2020_PQ_rgb(itm)
             rgb = (pq * 1023).round().astype(int)
@@ -1706,6 +1934,14 @@ class HDRCalibrationUI:
     
     @safe_call
     def measure_pq(self):
+        # 「测量色准」必须有色度计：历史数据复用能让「校准」在没有仪器时跑通，
+        # 但色准测量本身是实时测量，缺仪器时给出明确提示而不是抛异常。
+        # `instrument_choose` 只在 spotread --help 真的列出仪器时才有内容。
+        if not getattr(self, "instrument_choose", None):
+            msg = _("No colorimeter detected. Connect a colorimeter to measure color accuracy (calibration itself can run on historical data alone).")
+            logging.error(msg)
+            tk.messagebox.showerror(_("No instrument found"), msg)
+            return
         self.proc_color_write = ColorWriter()
         args = self.get_spotread_args()
         self.proc_color_reader = ColorReader(args)
@@ -2012,7 +2248,155 @@ class HDRCalibrationUI:
 
         self.run_in_thread(m, cb)
 
+    def _measured_color_samples(self):
+        """
+        取本次校准可用的实测色卡样本，供 CLUT 正向模型校验。
+
+        数据来源：实时测量（`calibrate_chromaticity` 写入的 `measured_xyz`）或
+        历史颜色数据（`_apply_color_run` 写入的 `reused_color_card`）。
+        返回 [(code3_pq_0..1, xyz3_abs_nits), ...]，没有数据时返回 None。
+        """
+        card = getattr(self, "reused_color_card", None)
+        if card:
+            return card
+        measured = getattr(self, "measured_xyz", None)
+        target = getattr(self, "target_xyz", None)
+        if not measured or not target or len(measured) != len(target):
+            return None
+        samples = []
+        for itm, meas in zip(target, measured):
+            try:
+                pq = XYZ_to_BT2020_PQ_rgb(np.asarray(itm, dtype=float))
+                code = np.clip(np.asarray(pq, dtype=float), 0.0, 1.0)
+                xyz_nits = np.asarray(meas, dtype=float) * 10000.0
+            except Exception:
+                continue
+            samples.append((code, xyz_nits))
+        return samples or None
+
+    def _make_display_model(self):
+        """
+        用当前校准结果构造 DisplayModel（CLUT 生成的正向模型）。
+
+        只依赖校准过程中已经得到的实测数据，不需要额外测量：
+          · rXYZ/gXYZ/bXYZ/wtpt 实测原色与白点（可为历史颜色数据）
+          · MHC2 每通道 1D LUT（显示器实际响应）
+          · 峰值 / 黑场亮度
+          · 可选：实测色卡样本，用于校验正向模型（`color_accuracy_report`）
+        """
+        mhc2 = self.MHC2
+        xyz = self.measure_gamut_xyz
+        required = ("red", "green", "blue", "white_paper")
+        if any(k not in xyz or xyz[k] is None for k in required):
+            raise ValueError(_("Primaries not measured yet; run calibration first"))
+
+        gray = getattr(self, "measured_pq", None)
+        usable_gray = gray if (gray and len(gray.get("red", [])) > 4) else None
+        model = build_model_from_calibration(
+            mhc2,
+            xyz["red"], xyz["green"], xyz["blue"], xyz["white_paper"],
+            peak_nits=mhc2.get("peak_luminance"),
+            black_nits=mhc2.get("min_luminance") or 0.0,
+            measured_pq=usable_gray,
+            measured_colors=self._measured_color_samples(),
+        )
+        return model
+
+    def _model_signature(self):
+        """模型指纹：任一输入变化都会让它变，用于缓存 CLUT 生成结果。"""
+        mhc2 = self.MHC2
+        xyz = self.measure_gamut_xyz
+        try:
+            return (
+                float(mhc2.get("peak_luminance") or 0.0),
+                float(mhc2.get("min_luminance") or 0.0),
+                mhc2["red_lut"][::16], mhc2["green_lut"][::16], mhc2["blue_lut"][::16],
+                tuple(round(float(v), 6) for k in ("red", "green", "blue", "white_paper")
+                      for v in xyz[k]),
+            )
+        except Exception:
+            return None
+
+    def _make_clut_tags(self):
+        """
+        生成（或从缓存取出）CLUT 标签块。
+
+        这是**纯计算**、只读自我当前状态的一步，也是保存/预览里最慢的一步
+        （B2A0 反向求解，33³ 约 30 s，17³ 约 3 s），因此它被单独拆出来，
+        好让调用方把这一步放到工作线程里跑，避免界面「卡死」。
+
+        返回 (tags, model)；未启用 CLUT 时返回 (None, None)。
+        """
+        grid = int(self.clut_grid_var.get() or CLUT_GRID_DEFAULT)
+        model = self._make_display_model()
+        signature = (grid, self._model_signature())
+        cache = getattr(self, "_clut_cache", None)
+        if cache is None or cache[0] != signature:
+            tags = make_clut_tags(model, grid=grid, fmt=CLUT_FORMAT_MFT2, with_b2a=True)
+            self._clut_cache = (signature, tags)
+        else:
+            tags = cache[1]
+        return tags, model
+
+    def _report_clut(self, tags, model):
+        """把 CLUT 结果与色卡校验写进日志（保留原提示文本）。"""
+        meta = tags["_meta"]
+        text = _("CLUT written: {} ({}³, {:.0f} KB, interpolation error {:.3f}%)").format(
+            "A2B0/B2A0", meta["grid"],
+            sum(meta["tag_sizes"].values()) / 1024.0,
+            meta["a2b_interp_mean_err"] * 100.0,
+        )
+        logging.info(text)
+        if meta["a2b_interp_max_err"] > 0.02:
+            logging.warning(_("CLUT self-check: max interpolation error {:.3f}% (near the "
+                              "PCS ceiling)").format(meta["a2b_interp_max_err"] * 100.0))
+
+        # 实测色卡（本次测量或历史颜色数据）对正向模型的校验：把历史颜色数据
+        # 真正「带进」CLUT —— 报告显示模型对这些实测颜色的预测偏差。
+        # 阈值定得比较宽松（15 ΔE ITP）：这是**模型自一致性**指标，真实数据上
+        # 面板状态漂移本身就能达到这个量级，只有明显不一致（例如选错了 run）
+        # 才值得报警。详见 clut_icc.DisplayModel.color_accuracy_report 的说明。
+        summary = model.color_accuracy_summary()
+        if summary:
+            logging.info(_("CLUT colour check (A2B vs measured card): {}").format(summary))
+            mean_de = model.color_accuracy_report()["mean_de_itp"]
+            if mean_de > 15.0:
+                logging.warning(_("CLUT colour check: mean dE ITP {:.2f} is high — the "
+                                  "forward model deviates strongly from the measured "
+                                  "colour card (reused historical data may come from "
+                                  "another display or an incompatible session)").format(mean_de))
+        return text
+
+    def write_clut_if_enabled(self):
+        """
+        按用户选择把 CLUT（A2B0/B2A0）标签写入内存中的 profile。
+
+        返回 (写入的标签列表, 提示文本)；未启用时返回 (None, None)。
+        CLUT 不改变矩阵/MHC2 标签，只在同一个 ICC 文件里补上标准多维表。
+
+        注意：这一版是**同步**的（生成 + 写标签都在当前线程）。界面上的「保存」
+        走的是 `generate_and_save_icc`，它把耗时的那一步放到工作线程；这里保留
+        同步版本给测试与内部调用。
+        """
+        if not getattr(self, "clut_var", None) or not self.clut_var.get():
+            return None, None
+
+        tags, model = self._make_clut_tags()
+        written = write_clut_tags(self.icc_handle, tags)
+        text = self._report_clut(tags, model)
+        return written, text
+
     def generate_and_save_icc(self):
+        """
+        保存 ICC。
+
+        CLUT 的反向求解很慢：维护者机器上实测 17³ ≈ 5 s、25³ ≈ 17 s、33³ ≈ 37 s，
+        45³/65³ 是分钟级。原来它在主线程里同步跑，界面在这段时间完全没有响应，
+        看起来就是「保存卡死」（Windows 也可能报「未响应」）。
+        现在只把「生成 CLUT 标签」这一步放到工作线程，主线程负责写 profile 与安装
+        ICC；期间用 `freeze_ui()` 禁用交互（并显示等待光标）。
+        不启用 CLUT 时没有慢步骤，保持原来的同步路径。
+        """
         path = filedialog.asksaveasfilename(
             initialdir=os.path.expanduser("~/Documents"),
             title=_("Save ICC file"),
@@ -2025,11 +2409,58 @@ class HDRCalibrationUI:
         name_without_ext = os.path.splitext(filename)[0]
         desc = [{"lang": "en", "country": "US", "text": name_without_ext}]
         self.icc_handle.write_desc(desc)
-        self.icc_handle.rebuild()
-        self.icc_handle.save(path)
-        if self.icc_set_var.get():
-            self.preview_var.set(False)
-            self.set_icc(path)
+
+        clut_on = bool(getattr(self, "clut_var", None) and self.clut_var.get())
+        if clut_on:
+            # CLUT 的反向求解是这个程序里最慢的一步（17³≈5s、25³≈17s、33³≈37s、
+            # 45³≈3min、65³≈8min，取决于机器）。所以：先把预计耗时写进日志，
+            # 再把计算放到工作线程，界面保持可拖动/可重绘（控件暂时禁用）。
+            grid = int(getattr(self, "clut_grid_var", None) and self.clut_grid_var.get()
+                       or CLUT_GRID_DEFAULT)
+            logging.info(_("Generating CLUT for saving: {}³ grid, this can take a while (seconds to minutes)…").format(grid))
+
+        def worker():
+            # 只做纯计算：不碰 GUI，也不改 profile（写 profile 放回主线程）
+            if not clut_on:
+                return None
+            return self._make_clut_tags()
+
+        def on_done(result):
+            exc = result if isinstance(result, Exception) else None
+            try:
+                if exc is not None:
+                    msg = _("CLUT generation failed: {}").format(exc)
+                    logging.error(msg)
+                    tk.messagebox.showerror(_("Error"), msg)
+                elif result is not None:
+                    tags, model = result
+                    write_clut_tags(self.icc_handle, tags)
+                    self._report_clut(tags, model)
+                self.icc_handle.rebuild()
+                self.icc_handle.save(path)
+                logging.info(_("ICC profile saved: {}").format(path))
+            except Exception as save_exc:  # noqa: BLE001
+                msg = _("Failed to save ICC file: {}").format(save_exc)
+                logging.error(msg)
+                logging.error(traceback.format_exc())
+                tk.messagebox.showerror(_("Error"), msg)
+            finally:
+                self.unfreeze_ui()
+            if self.icc_set_var.get():
+                self.preview_var.set(False)
+                self.set_icc(path)
+
+        if clut_on:
+            self.freeze_ui()
+            self.run_in_thread(worker, on_done)
+        else:
+            # 没有 CLUT 时没有慢步骤，保持原来的同步行为（含安装 ICC）
+            self.icc_handle.rebuild()
+            self.icc_handle.save(path)
+            logging.info(_("ICC profile saved: {}").format(path))
+            if self.icc_set_var.get():
+                self.preview_var.set(False)
+                self.set_icc(path)
 
 
 if __name__ == "__main__":

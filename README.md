@@ -60,7 +60,9 @@ For the full list, please refer to the official documentation.
 4. **Number of Grayscale Samples**  
    10‑bit HDR has 1024 grayscale levels (R=G=B, range 0–1023).  
    The program will sample a specified number of grayscale points evenly from these 1024 levels and interpolate the unsampled levels.  
-   More samples generally (but not always) mean more accurate PQ curve calibration, at the cost of longer measurement time.
+   More samples generally (but not always) mean more accurate PQ curve calibration, at the cost of longer measurement time.  
+   The measured curve becomes the `MHC2` 1D LUT by **inversion**: for every target output PQ the LUT holds the input PQ the panel needs (`lut[i] = f⁻¹(i/4095)`, noise-monotone-corrected, piecewise-linear inverse). One deliberate detail: **above the measured peak the LUT stays at the code value where the panel was brightest**, even when that is not the last sample — on the maintainer's OLED the curve peaks at code ≈ 814 and then rolls back to code 1023 because of ABL/power limiting, so clamping to PQ 1.0 there would make highlights measurably darker instead of brighter.  
+   Self-check: `python tools/verify_lut_inverse.py` (36 checks, no display or colorimeter needed).
 
 5. **Color Sample Set**  
    The program generates a test set within the selected gamut, and fits a matrix from the relationship between the expected XYZ values and the measured XYZ values. Four tiers are available:
@@ -76,11 +78,45 @@ For the full list, please refer to the official documentation.
    Click "Refresh" to reload the list (e.g. after a new calibration in this session); the list is also refreshed automatically when a calibration finishes.  
    Note: the historical data must come from the same display, and interrupted/incomplete measurements are not shown.
 
-7. **Bright Mode**  
+7. **Historical Color Data (skip re-measuring primaries and the color card)**  
+   The same reasoning applies to the colour half of a calibration. The primaries / white / paper-white / black points and the colour-card samples are measured **before** the calibration ICC is written, i.e. with the identity-matrix, flat-LUT preview profile — so what they record is the panel's *native* response at that code value, which does not depend on the target white point. `calibrate_chromaticity` does not white-point-adapt its measurements either.  
+   Select a past complete colour measurement from the "Historical color data" dropdown (labeled with its measurement end time, the number of colour-card samples and the sample set), and the whole colour part of the calibration is skipped:
+   - the gamut test points (red/green/blue/white/white-paper/black) and the activated-black binary search,
+   - the colour-card run (12–25 meter readings, ~1.5 s each),
+   - and the `rXYZ`/`gXYZ`/`bXYZ`/`wtpt`, `lumi`, TRC and `MHC2` peak/black writes all come from the reused run — through exactly the same code path (`_apply_gamut_data`) a live measurement uses, so the resulting profile is built the same way.
+
+   ### Calibrating with no colorimeter at all
+
+   If **both** dropdowns point at historical data (a past grayscale run *and* a past colour run), the calibration needs no measurement whatsoever. In that case the app
+   - does **not** launch `dogegen` or `spotread`, and
+   - does **not** show the "place the colorimeter" dialog,
+   - skips the post-calibration gamut re-measurement too (it only re-derives the same tags from the same primaries),
+
+   and you can press **Calibrate** and then **Save as ICC file** to produce a profile with no instrument connected at all. The log states this explicitly:
+   ```
+   Historical data is enough: no colorimeter needed for this calibration
+   Historical color data reused: skipped gamut and color-card measurement
+   Historical color data reused: skipped the post-calibration gamut re-measurement
+   ```
+   Everything that *is* measured still applies: the reused runs must come from the same display in the same state, and the ICC is only as good as those two runs. "Measure color accuracy" is a live measurement, so it still needs a colorimeter and says so instead of failing.
+
+   **How it reaches the CLUT algorithm**: the reused primaries and white point are what `primaries_matrix()` turns into the linear `RGB → XYZ` matrix of the forward model (`DisplayModel`), and that matrix *is* the `A2B0` direction of the CLUT. In addition, the reused colour-card samples are attached to the model, so when the CLUT is generated the app checks the forward model against them and logs the result:
+   ```
+   CLUT colour check (A2B vs measured card): measured colour card: 25 samples,
+   mean dE ITP 1.83, median 1.55, max 5.41, mean |ΔXYZ| 12.4 nit
+   ```
+   The card data is used as a **verification set**, not as fit input — it never silently changes the CLUT that the measured primaries / `MHC2` already determine (the same "matrix stays identity, primaries + 1D LUT do the work" policy as before). The app warns when the mean ΔE ITP is above a deliberately loose 15: this is a **model self-consistency** indicator rather than an absolute accuracy figure, because the panel's own run-to-run repeatability already shows up in it (on the maintainer's display, gray runs 8–40 min apart differ by up to 0.016 PQ, and comparing the colour card with a model built from a gray run measured 2.4 h earlier gives mean ΔE ITP ≈ 149). A clearly large value means the reused data and the current session disagree, e.g. the run came from another display.
+
+   Notes and caveats:
+   - Only complete runs are listed: all six gamut points **and** at least one colour-card sample. Cancelled calibrations are not offered.
+   - The measurement is still a measurement of one display in one state: a colour run is only valid for the same display, the same SDR paper white / HDR mode, and with no calibration ICC loaded. If you changed any of those, re-measure.
+   - `Refresh` reloads the list; it is also refreshed automatically when a calibration finishes.
+   - Colour runs are parsed from `hc.log` with the same date inference as the grey history, so both dropdowns show the same dates.
+8. **Bright Mode**  
    Applies an overall boost to the generated LUT (1D LUT * 1.1).  
    This is only suitable for watching movies in strong ambient light.
 
-8. **Preview Calibration Result**  
+9. **Preview Calibration Result**  
    After calibration, the matrix and LUT are stored in memory.  
    When “Preview calibration result” is checked, a temporary ICC profile will be generated and applied to the selected display.  
    When unchecked, the temporary profile is automatically removed.  
@@ -88,16 +124,51 @@ For the full list, please refer to the official documentation.
    If calibration has not been run yet, an ideal HDR ICC profile is loaded instead  
    (BT.2020 gamut, 10000 nits, identity matrix and unmodified LUT).
 
-9. **Calibrate**  
-   Generates the matrix and LUT.
+10. **Calibrate**  
+    Generates the matrix and LUT.
 
-10. **Measure Color Accuracy**  
+11. **Measure Color Accuracy**  
     Measures the color accuracy of the display.  
     If “Preview calibration result” is checked, the current matrix and LUT are temporarily applied to the display before measurement.  
     The accuracy of this feature has not been deeply validated.
 
-11. **Save**  
+12. **Save**  
     Saves the matrix and LUT as an ICC profile.
+
+13. **CLUT output (A2B0/B2A0)**  
+    When checked, the saved/previewed ICC additionally gets the standard ICC multi-dimensional lookup tables
+    (`A2B0` forward, `B2A0` reverse, written as `lut16Type`); the dropdown next to it selects the grid size
+    (17/25/33/37/45/65, default 33). The existing matrix tags and the private `MHC2` tag are **kept exactly as
+    before** — the CLUT only adds the standard layer, so the normal Windows HDR calibration path is unaffected.
+
+    - **Where the data comes from**: everything is derived from measurements this calibration already made
+      (measured primaries/white point + the `MHC2` per-channel curves + peak/black luminance). **No extra measurement.**
+      Those primaries may come from a live measurement or from
+      "Historical color data" (see note 7) — either way the CLUT is built from the same inputs.
+    - **Device encoding**: `RGB` with the ST 2084 (PQ) transfer function — the display's native input in
+      Windows HDR mode. The CLUT axes are therefore PQ code values (0–1023 normalized).
+    - **PCS anchoring**: peak-relative XYZ — the brightest white the display can produce maps to PCS `Y = 1.0`,
+      with `X`/`Z` scaled by its own chromaticity. This is the same convention DisplayCAL's "XYZLUT+MTX" monitor
+      profiles use (`wtpt` = native white, `lumi` = peak luminance).
+    - **Known limitation (important)**: every PCS component can only span 0–1. Many bright saturated HDR colors
+      have an XYZ component above the white point (e.g. for BT.2020 primaries at peak white, red `X≈0.95`,
+      blue `Z≈1.19`); those components get clipped at 1.0. Consequently:
+      * `A2B0` (forward): fully accurate — mean interpolation error ≈ **0.005%** on the synthetic-display self-test (33³);
+      * `B2A0` (reverse): exact for colors that are **not** clipped (median closed-loop error ≈ 0.002%); inside the
+        clipped highlight region different device codes map to the same PCS value, so the inverse is inherently
+        many-to-one and can only return one reasonable answer for the request. For accuracy-critical use, treat
+        `A2B0` (the forward description) as authoritative.
+    - **Cost**: the `B2A0` inverse solve dominates. Measured on the maintainer's machine:
+      17³ ≈ 5 s, 25³ ≈ 17 s, 33³ ≈ 37 s; 45³/65³ scale roughly with the node count
+      (minutes). It is computed once per calibration state and cached, so preview and
+      save do not recompute it. The work runs on a worker thread while saving, so the
+      window stays responsive (controls are disabled and the log announces the wait);
+      a save without CLUT has no slow step at all.
+    - **Self-checks**: `python tools/verify_clut_profile.py` (full synthetic-display round trip, 25 checks),
+      `python tools/verify_clut_app_integration.py` (app integration path, 13 checks) and
+      `python tools/verify_color_history.py` (historical colour data parsing + reuse + meter-free
+      calibration + CLUT check, 40 checks).
+
 
 ## Integrated External Tools
 

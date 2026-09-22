@@ -1,4 +1,15 @@
+# 本项目直接使用的第三方依赖
 numpy
 matplotlib
 colour-science
+
+# wexpect 4.0.0（本地 vendored 副本）
+# 注意：必须是仓库里这一份。上面的 PyPI 版 wexpect 在模块顶层
+# `import pkg_resources`，而 setuptools >= 81 已移除 pkg_resources，
+# 会导致 `import app` 直接失败（ModuleNotFoundError: pkg_resources）。
+# 仓库这份副本已改为静态版本号，不再依赖 pkg_resources。
 ./wexpect-4.0.0/
+
+# wexpect 自身的运行依赖（它声明了，但显式列出可避免解析器差异）
+psutil>=5.0.0
+pywin32>=220
