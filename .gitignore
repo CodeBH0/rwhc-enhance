@@ -204,3 +204,14 @@ __marimo__/
 
 # numpy cache
 horseshoe_cache.npy
+
+# Runtime measurement artifacts (local only, not for the repo)
+hc.log
+/FFALCON*.xml
+/archive/
+# Local build leftovers inside the vendored wexpect source
+wexpect-4.0.0/build/
+wexpect-4.0.0/*.egg-info/
+
+# Virtual environment (incl. suffixed names like .venv314)
+.venv*

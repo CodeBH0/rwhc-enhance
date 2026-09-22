@@ -354,7 +354,14 @@ class SpawnBase:
             spath = [os.path.dirname(dirname)]
 
             pyargs = ['-m']
-            python_executable = sys.executable
+            # In a virtualenv created by CPython 3.7+ on Windows, sys.executable is the venv
+            # launcher stub, which spawns the real base interpreter as a child process. The pipe
+            # name used by SpawnPipe.connect_to_child() is derived from the PID returned by
+            # CreateProcess(), while the console reader derives it from os.getpid() of the process
+            # that actually runs `python -m wexpect`. Launching the console reader with the base
+            # interpreter directly keeps those PIDs identical; otherwise the two sides never find
+            # each other's pipe and both hang forever.
+            python_executable = getattr(sys, '_base_executable', sys.executable)
 
             if self.coverage_console_reader:
                 pyargs = ['-m', 'coverage', 'run', '--parallel-mode', '-m']
@@ -871,6 +878,9 @@ class SpawnPipe(SpawnBase):
         pipe_name = 'wexpect_{}'.format(self.console_pid)
         pipe_full_path = r'\\.\pipe\{}'.format(pipe_name)
         logger.debug(f'Trying to connect to pipe: {pipe_full_path}')
+        # Bound the retry loop: if the console reader never creates the pipe (e.g. it failed to
+        # start), fail with an exception instead of hanging the caller forever.
+        connect_deadline = time.time() + 30
         while True:
             try:
                 self.pipe = win32file.CreateFile(
@@ -890,6 +900,11 @@ class SpawnPipe(SpawnBase):
                 return
             except pywintypes.error as e:
                 if e.args[0] == winerror.ERROR_FILE_NOT_FOUND:      # 2
+                    if time.time() > connect_deadline:
+                        raise ExceptionPexpect(
+                            'Timed out waiting for the wexpect console reader pipe {}. The '
+                            'console reader (python -m wexpect) did not start.'.format(
+                                pipe_full_path))
                     logger.debug("no pipe, trying again in a bit later")
                     time.sleep(0.2)
                 else:

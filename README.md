@@ -1,12 +1,14 @@
 # A Truly Usable HDR Calibration Tool for Windows 11
-[中文](https://github.com/CodeBH0/rwhc-v2026.09.02/blob/master/README_zh.md)|ENGLISH
+[中文](https://github.com/CodeBH0/rwhc-enhance/blob/master/README_zh.md)|ENGLISH
 
-![screenshot](https://github.com/CodeBH0/rwhc-v2026.09.02/blob/master/resources/ui_zh.png)
+![screenshot](https://github.com/CodeBH0/rwhc-enhance/blob/master/resources/ui.png)
 
 ## Usage
 
 1. **Get the Project Code**  
-   Download or clone this repository and go to the project root directory.
+   Download or clone this repository and go to the project root directory.  
+   Packaged snapshots are attached to [Releases](https://github.com/CodeBH0/rwhc-enhance/releases)
+   as `rwhc-v<version>.zip` — unzip and run, no git required.
 
 2. **Install Python**  
    Install Python on Windows (choose one of the following):
@@ -121,7 +123,9 @@ For details, see:
 The author does not work professionally in color science, so the calibration logic may not be optimal.  
 If you find issues or have better ideas, contributions and feedback are very welcome.
 
-See [CHANGELOG](CHANGELOG.md) for the version history (中文版见 [CHANGELOG_zh](CHANGELOG_zh.md)).
+See [CHANGELOG](CHANGELOG.md) for the version history (中文版见 [CHANGELOG_zh](CHANGELOG_zh.md)).  
+Released versions are tagged `v<year>.<month>.<day>` (e.g. `v2026.09.02`, `v2026.09.22`) and
+published with a packaged archive on the [Releases](https://github.com/CodeBH0/rwhc-enhance/releases) page.
 
 ## License
 

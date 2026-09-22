@@ -10,7 +10,19 @@ purpose — see the README for how to use the program.
 
 ---
 
-## [Unreleased] — GitHub release preparation
+## [2026-09-02] — v2026.09.02 (first tagged release)
+
+> **Release:** tag `v2026.09.02`, packaged as `rwhc-v2026.09.02.zip` on the
+> [Releases](https://github.com/CodeBH0/rwhc-enhance/releases) page.
+
+> **About this version:** this repository is maintained by someone other than
+> the original author. This version (2026-09-02) was developed with **heavy use
+> of DeepSeek Harness** (an AI-assisted coding tool). The maintainer has limited
+> programming experience, so the code is largely AI-generated and only manually
+> reviewed — it may contain non-optimal implementations or oversights. Please
+> review before use/release.
+
+### Fixed / improved
 
 - Commented out the experimental warm-color correction matrix that was tuned
   on the maintainer's display (the "v7 red-move matrix"). The default behavior is
@@ -20,15 +32,6 @@ purpose — see the README for how to use the program.
 - READMEs now document the "Historical gray data" feature.
 - Added this changelog; moved the internal handover/patch notes and per-display
   measurement logs into `archive\2026-09-02_24card-full\`.
-
-## [2026-09-02]
-
-> **About this version:** this repository is maintained by someone other than
-> the original author. This version (2026-09-02, plus the unreleased changes
-> below) was developed with **heavy use of DeepSeek Harness** (an AI-assisted
-> coding tool). The maintainer has limited programming experience, so the code
-> is largely AI-generated and only manually reviewed — it may contain
-> non-optimal implementations or oversights. Please review before use/release.
 
 ### Added
 

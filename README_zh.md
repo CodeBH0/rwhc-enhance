@@ -1,12 +1,14 @@
 # Windows 11 真正可用的 HDR 校准软件
-中文|[ENGLISH](https://github.com/CodeBH0/rwhc-v2026.09.02/blob/master/README.md)
+中文|[ENGLISH](https://github.com/CodeBH0/rwhc-enhance/blob/master/README.md)
 
-![screenshot](https://github.com/CodeBH0/rwhc-v2026.09.02/blob/master/resources/ui_zh.png)
+![screenshot](https://github.com/CodeBH0/rwhc-enhance/blob/master/resources/ui_zh.png)
 
 ## 使用方法
 
 1. **获取项目代码**  
-   下载或 clone 本项目，进入项目根目录。
+   下载或 clone 本项目，进入项目根目录。  
+   也可以在 [Releases](https://github.com/CodeBH0/rwhc-enhance/releases) 页面直接下载打包好的
+   `rwhc-v<版本>.zip`，解压即可运行，无需 git。
 
 2. **安装 Python**  
    在 Windows 上安装 Python（任选其一）：
@@ -111,7 +113,9 @@
 作者并不是色彩科学相关职业，因此校色逻辑可能并非最佳  
 如发现问题或有更好的想法，欢迎指出来
 
-版本历史见 [CHANGELOG_zh](CHANGELOG_zh.md)（English: [CHANGELOG](CHANGELOG.md)）。
+版本历史见 [CHANGELOG_zh](CHANGELOG_zh.md)（English: [CHANGELOG](CHANGELOG.md)）。  
+发布版本以 `v<年>.<月>.<日>` 打标签（如 `v2026.09.02`、`v2026.09.22`），并在
+[Releases](https://github.com/CodeBH0/rwhc-enhance/releases) 页面附上打包好的压缩包。
 
 ## 许可证
 
