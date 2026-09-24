@@ -8,8 +8,8 @@ verify_color_history.py — 验证「历史颜色数据」复用链路
      （完整 run 的识别、六个色域点、激活黑、色卡样本、字节级一致性）
   B. `DisplayModel` 的实测色卡校验（`color_accuracy_report`）数学正确性
      （合成数据：完全一致 → 误差 0；加入抖动 → 误差量级正确）
-  C. `app.py` 的复用集成路径（用 AST 抽取真实方法执行）：
-     `_measured_color_samples` / `_make_display_model`
+  C. `calibration_backend.py` 的复用集成路径：
+     `measured_color_samples` / `make_display_model`
      以及复用历史原色后的 CLUT 生成是否与直接构造的模型一致
 
 用法：
@@ -20,7 +20,6 @@ verify_color_history.py — 验证「历史颜色数据」复用链路
 import logging
 import os
 import sys
-import types
 
 import numpy as np
 
@@ -244,64 +243,40 @@ def test_accuracy_math():
 
 
 # ======================================================================
-# C. app.py 集成路径
+# C. calibration_backend 集成路径
 # ======================================================================
-
-def load_app_methods(*method_names):
-    """从 app.py 原样抽取方法源码（避免引入 GUI/wexpect 依赖）。"""
-    import ast
-    app_path = os.path.join(PROJECT_ROOT, "app.py")
-    src = open(app_path, encoding="utf-8").read()
-    tree = ast.parse(src)
-    wanted = set(method_names)
-    chunks, found = [], set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "HDRCalibrationUI":
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef) and item.name in wanted:
-                    chunk = ast.get_source_segment(src, item)
-                    chunk = chunk[chunk.index("def "):]
-                    chunks.append(chunk)
-                    found.add(item.name)
-    missing = wanted - found
-    if missing:
-        raise RuntimeError("app.py 中找不到方法: {}".format(sorted(missing)))
-
-    ns = {"__name__": "app_color_methods_test"}
-    exec("import numpy as np\nimport os\n", ns)
-    from clut_icc import build_model_from_calibration as _bmc
-    from convert_utils import XYZ_to_BT2020_PQ_rgb as _xyz2pq
-    ns["build_model_from_calibration"] = _bmc
-    ns["XYZ_to_BT2020_PQ_rgb"] = _xyz2pq
-    ns["_"] = lambda s: s
-    exec("\n".join(chunks), ns)
-    return {name: ns[name] for name in method_names}, ns
 
 
 def build_fake_app(run, gam, peak, black):
-    """构造只带 `_make_display_model` 所需属性的假 app（色卡来自历史 run）。"""
+    """构造只带 DisplayModel 所需状态的 backend（色卡来自历史 run）。"""
     card = []
     for _idx, rgb, _tgt, meas in run["points"]:
         card.append(((np.asarray(rgb, float) / 1023.0).tolist(),
                      (np.asarray(meas, float) * 10000.0).tolist()))
-    fake = types.SimpleNamespace(
-        MHC2={"red_lut": [0.0, 1.0], "green_lut": [0.0, 1.0], "blue_lut": [0.0, 1.0],
-              "peak_luminance": peak, "min_luminance": black},
-        measure_gamut_xyz=gam,
-        measured_pq=None,
-        reused_color_card=card,
-        measured_xyz=[list(np.asarray(m, float)) for _i, _r, _t, m in run["points"]],
-        target_xyz=[list(np.asarray(t, float)) for _i, _r, t, _m in run["points"]],
-    )
-    methods, _ns = load_app_methods("_measured_color_samples", "_make_display_model")
-    for name, fn in methods.items():
-        setattr(fake, name, types.MethodType(fn, fake))
-    return fake
+    from calibration_backend import CalibrationBackend
+    backend = CalibrationBackend(base_dir=PROJECT_ROOT)
+    backend.state.MHC2 = {
+        "red_lut": [0.0, 1.0],
+        "green_lut": [0.0, 1.0],
+        "blue_lut": [0.0, 1.0],
+        "peak_luminance": peak,
+        "min_luminance": black,
+    }
+    backend.state.measure_gamut_xyz = gam
+    backend.state.measured_pq = None
+    backend.state.reused_color_card = card
+    backend.state.measured_xyz = [
+        list(np.asarray(m, float)) for _i, _r, _t, m in run["points"]
+    ]
+    backend.state.target_xyz = [
+        list(np.asarray(t, float)) for _i, _r, t, _m in run["points"]
+    ]
+    return backend
 
 
 def test_app_integration(runs):
     results = []
-    print("\n=== C. app.py 复用集成（AST 抽取真实方法）===")
+    print("\n=== C. calibration_backend 复用集成 ===")
     if not runs:
         print("  (跳过：没有可用的历史颜色 run)")
         return results
@@ -311,7 +286,7 @@ def test_app_integration(runs):
     peak, black = ch.peak_min_luminance(run)
 
     fake = build_fake_app(run, gam, peak, black)
-    samples = fake._measured_color_samples()
+    samples = fake.measured_color_samples()
     results.append(check("_measured_color_samples 返回全部色卡样本",
                          samples is not None and len(samples) == len(run["points"]),
                          "{} 个".format(len(samples) if samples else 0)))
@@ -329,11 +304,11 @@ def test_app_integration(runs):
     # 真实 MHC2 只能来自一次真实校准，无法在无显示器环境下复现。
     # 峰值亮度用历史 run 的真实值，避免与合成表量级不一致。
     mhc2 = make_synthetic_mhc2(peak_nits=peak)
-    fake.MHC2 = dict(mhc2)
-    fake.MHC2["peak_luminance"] = peak
-    fake.MHC2["min_luminance"] = black
+    fake.state.MHC2 = dict(mhc2)
+    fake.state.MHC2["peak_luminance"] = peak
+    fake.state.MHC2["min_luminance"] = black
 
-    model = fake._make_display_model()
+    model = fake.make_display_model()
     results.append(check("_make_display_model 用复用数据成功构造模型",
                          model is not None,
                          "peak {:.0f} nit, lut {} 项".format(model.peak_nits, model.lut_size)))
@@ -399,13 +374,61 @@ def test_history_only_mode(runs):
         print("  (跳过：无 tkinter)")
         return results
 
-    import app as appmod
+    try:
+        import app as appmod
+    except ModuleNotFoundError as exc:
+        print("  (跳过：app 运行依赖未安装：{})".format(exc))
+        return results
 
     class Boom(Exception):
         pass
 
     def boom(*a, **k):
         raise Boom("hardware/dialog was touched")
+
+    class FakeDisplayPlatform:
+        """Device-edge fake; UI and backend services still run their real paths."""
+
+        def __init__(self):
+            self.operations = []
+
+        def enumerate_displays(self):
+            return [{
+                "path_index": 0,
+                "adapter_luid": {"low_part": 1, "high_part": 0},
+                "source": {"id": 0, "gdi_name": r"\\.\DISPLAY_TEST"},
+                "target": {
+                    "device_path": r"\\?\DISPLAY#TEST123#INSTANCE#{GUID}",
+                    "friendly_name": "Test Display",
+                    "sdr_white_level_nits": 200.0,
+                    "advanced_color": {
+                        "enabled": True,
+                        "wide_color_enforced": False,
+                    },
+                },
+            }]
+
+        def monitor_rect(self, gdi_name):
+            return {
+                "gdi_name": gdi_name,
+                "left": 0,
+                "top": 0,
+                "right": 1920,
+                "bottom": 1080,
+                "is_primary": True,
+            }
+
+        def install_profile(self, path):
+            self.operations.append(("install", os.path.basename(path)))
+
+        def add_profile_association(self, info, filename):
+            self.operations.append(("associate", filename))
+
+        def remove_profile_association(self, info, filename):
+            self.operations.append(("remove_association", filename))
+
+        def uninstall_profile(self, filename):
+            self.operations.append(("uninstall", filename))
 
     # 这一关会真的跑一次校准并写日志。做法分两步：
     #   1) 按原样构造 UI —— 让 app.py 从**真实** hc.log 读历史数据；
@@ -435,7 +458,12 @@ def test_history_only_mode(runs):
         # 与日志级别无关，所以不受影响）。
         root_logger.setLevel(logging.CRITICAL + 1)
         root = appmod.tk.Tk()
-        ui = appmod.HDRCalibrationUI(root)
+        display_platform = FakeDisplayPlatform()
+        backend = appmod.CalibrationBackend(
+            base_dir=PROJECT_ROOT,
+            display_platform=display_platform,
+        )
+        ui = appmod.HDRCalibrationUI(root, backend=backend)
         root.update_idletasks()
     except Exception as e:  # noqa: BLE001
         root_logger.setLevel(orig_level)
@@ -509,6 +537,13 @@ def test_history_only_mode(runs):
 
         results.append(check("calibrate_monitor 在不接仪器时跑通（未触碰硬件/弹窗）",
                              err is None, err or "no hardware access"))
+        operation_names = [name for name, _value in display_platform.operations]
+        results.append(check("ICC 预览通过 backend display port 隔离",
+                             "install" in operation_names
+                             and "associate" in operation_names
+                             and "remove_association" in operation_names
+                             and "uninstall" in operation_names,
+                             ", ".join(operation_names)))
         results.append(check("profile 原色/白点来自历史颜色数据",
                              all(ui.measure_gamut_xyz.get(k) is not None
                                  for k in ("red", "green", "blue", "white", "white_paper", "black"))

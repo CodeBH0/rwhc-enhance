@@ -10,6 +10,54 @@ purpose — see the README for how to use the program.
 
 ---
 
+## Unreleased
+
+- Extended protocol v1 into a calibration-ready multiplexed boundary: short
+  RPC responses and sequenced `progress`/`log`/`prompt`/`result`/`error` events
+  share the NDJSON stream, with prompt replies, one-operation exclusivity and
+  cooperative cancellation. Added a strict schema-v1 codec for
+  `CalibrationRequest` with canonical defaults, type/range checks, exact
+  versioning, unknown-field rejection and backend-owned history IDs.
+- Migrated the first real WinUI feature group. Monitor discovery/selection,
+  selected-monitor SDR paper white, and Argyll instrument/mode options now call
+  `DisplayService` and `InstrumentService`; they are not UI mocks. The expanded
+  smoke test covers real device RPCs, request validation and a prompted async
+  event flow without changing ICC state or calibration algorithms.
+- Added the first C# + WinUI 3 replacement-frontend skeleton under
+  `frontend/Rwhc.WinUI` (XAML, .NET 10, Windows App SDK 2.5.1). The current
+  Python/Tk UI remains only as the feature and interaction reference; the new
+  project does not establish a second long-term UI architecture.
+- Added `backend_host.py` and a versioned, allow-listed UTF-8 NDJSON protocol
+  over a WinUI-owned Python child process. The first complete call path is
+  `WinUI → PythonBackendClient → backend.describe → CalibrationBackend`, which
+  returns real profile/MHC2 readiness, history counts, request fields and CLUT
+  capabilities without touching display ICC associations or calibration maths.
+  Protocol/lifecycle details are in `docs/FRONTEND_IPC.md`; the hardware-free
+  Python verifier is `tools/verify_backend_host.py`.
+- Added a GUI-independent application boundary in `calibration_backend.py`.
+  `CalibrationRequest` snapshots frontend inputs as plain data, while
+  `CalibrationState` owns profile/measurement/history/process state. Windows
+  display and ICC operations, Argyll discovery/argument construction, external
+  process lifetime, historical-data restoration, profile/CLUT generation and
+  calibration pipeline ordering now live behind backend services. Importing
+  this module does not import Tkinter or the instrument runtime.
+- The Tk controller now adapts widgets to the backend request/state instead of
+  owning those responsibilities. Existing algorithm bodies and numeric paths
+  are unchanged. Added `docs/BACKEND.md` and the hardware-free
+  `tools/verify_calibration_backend.py` boundary test.
+- Fixed a backend-decoupling regression where dual-history mode was not
+  recognized before a request snapshot existed. The Windows device edge of
+  `DisplayService` is now injectable, so the GUI history-calibration test
+  exercises the real service path without changing system ICC associations.
+- Refactored the main Tkinter view out of `app.py` into `app_ui.py`. The former
+  400-line `build_ui()` method is now split into focused builders for menus,
+  device/calibration settings, history selectors, actions and the log panel.
+  Widget state freezing and the selected-monitor overlay also live in the UI
+  module. Calibration callbacks and their existing controller attributes are
+  unchanged.
+- Added `tools/verify_app_ui.py`, a hardware-free smoke test for main-window
+  construction, default values, and freeze/unfreeze state restoration.
+
 ## [2026-09-22] — v2026.09.22 (GitHub release)
 
 > **Release:** tag `v2026.09.22`, packaged as `rwhc-v2026.09.22.zip` on the
@@ -318,5 +366,3 @@ purpose — see the README for how to use the program.
 - First verified release on the maintainer's display (FFALCON R27U81): average
   ΔE 1.16 / max 5.52 on the 12-color card after the fixes above.
 - Archive snapshots of the intermediate versions are kept in `archive\`.
-
-

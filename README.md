@@ -3,6 +3,48 @@
 
 ![screenshot](https://github.com/CodeBH0/rwhc-enhance/blob/master/resources/ui.png)
 
+## Frontend Migration Status
+
+The frontend is being replaced with **C# + WinUI 3** (Windows App SDK + XAML).
+The first migration stage is available in `frontend/Rwhc.WinUI` and includes a
+buildable WinUI shell plus a working process boundary to the existing Python
+backend. The current Python/Tk UI is retained only as the feature and
+interaction reference until the WinUI frontend reaches parity; this project is
+not adopting two permanent UI implementations.
+
+Current WinUI scope:
+
+- .NET 10, WinUI 3, XAML, and Windows App SDK 2.5.1;
+- a versioned, allow-listed UTF-8 NDJSON protocol over a WinUI-owned Python
+  child process, with multiplexed short RPC responses and asynchronous
+  progress/log/prompt/result/error events plus cooperative cancellation;
+- a strict, versioned JSON contract for `CalibrationRequest`;
+- real backend calls for display discovery/selection, SDR paper white, and
+  Argyll instrument/mode options;
+- no calibration-algorithm rewrite and no display ICC changes from these
+  read-only calls.
+
+The complete calibration workflow still runs through `python app.py` for now.
+To build and run the WinUI migration shell, install the .NET 10 SDK and the
+Python dependencies, then run from the repository root:
+
+```powershell
+dotnet build frontend\Rwhc.WinUI\Rwhc.WinUI.csproj -c Debug -p:Platform=x64
+dotnet run --project frontend\Rwhc.WinUI\Rwhc.WinUI.csproj -c Debug
+```
+
+The WinUI page automatically reads the real device environment and can refresh
+it on demand. An automated request/event/device smoke test is also available:
+
+```powershell
+frontend\Rwhc.WinUI\bin\x64\Debug\net10.0-windows10.0.26100.0\win-x64\Rwhc.WinUI.exe --smoke-test
+```
+
+Exit code `0` means that the WinUI runtime started and the C# client read a
+ready Python backend profile. See [the IPC protocol](docs/FRONTEND_IPC.md),
+[the backend boundary](docs/BACKEND.md), and
+[the WinUI project notes](frontend/Rwhc.WinUI/README.md) for details.
+
 ## Usage
 
 1. **Get the Project Code**  

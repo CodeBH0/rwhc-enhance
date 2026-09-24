@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-verify_clut_app_integration.py — 验证 app.py 的 CLUT 集成代码路径
+verify_clut_app_integration.py — 验证 GUI-independent backend 的 CLUT 集成路径
 
-不启动 GUI、不连接色度计：构造一个带有真实结构的假 app 对象，直接调用
-app.HDRCalibrationUI 上的三个方法：
+不启动 GUI、不连接色度计：构造 CalibrationBackend 并直接调用：
 
   · _make_display_model()   —— 由校准结果构造正向模型
   · _model_signature()      —— 模型指纹（缓存键）
@@ -21,7 +20,6 @@ app.HDRCalibrationUI 上的三个方法：
 import os
 import sys
 import time
-import types
 import tempfile
 
 import numpy as np
@@ -37,61 +35,9 @@ except Exception:
     pass
 
 from clut_icc import parse_clut_tag, tetrahedral_interp  # noqa: E402
+from calibration_backend import CalibrationBackend  # noqa: E402
 from icc_rw import ICCProfile  # noqa: E402
 from tools.verify_clut_profile import make_synthetic_mhc2  # noqa: E402
-
-
-def load_app_methods(*method_names):
-    """
-    从 app.py 里**原样提取**指定方法的源码，编译进一个精简命名空间执行。
-
-    为什么不直接 `import app`：app.py 顶层会 import color_rw -> wexpect -> psutil，
-    还要拉起 tkinter 窗口。本测试只关心 CLUT 相关的三个方法，用 AST 抽取真实
-    源码可以保证「测的就是实现」，又不引入 GUI/串口依赖。
-    """
-    import ast
-    app_path = os.path.join(PROJECT_ROOT, "app.py")
-    src = open(app_path, encoding="utf-8").read()
-    tree = ast.parse(src)
-
-    wanted = set(method_names)
-    chunks = []
-    found = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "HDRCalibrationUI":
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef) and item.name in wanted:
-                    if item.decorator_list:
-                        print(f"  (注意：{item.name} 带装饰器，测试中不再应用)")
-                    chunk = ast.get_source_segment(src, item)
-                    # 去掉装饰器行，保留 def
-                    chunk = chunk[chunk.index("def "):]
-                    chunks.append(chunk)
-                    found.add(item.name)
-    missing = wanted - found
-    if missing:
-        raise RuntimeError(f"app.py 中找不到方法: {sorted(missing)}")
-
-    # 从 app.py 里取出 clut_icc（以及 convert_utils 的色卡换算）的 import 语句，
-    # 保证用的符号和实现一致
-    imports = []
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            seg = ast.get_source_segment(src, node)
-            if "clut_icc" in seg or "logging" in seg:
-                imports.append(seg)
-    imports.append("from convert_utils import XYZ_to_BT2020_PQ_rgb")
-
-    ns = {"__name__": "app_methods_test"}
-    exec("import tkinter\nimport numpy as np\nimport os\n", ns)
-    exec("\n".join(imports), ns)
-    if "_" not in ns:
-        ns["_"] = lambda s: s
-    if "logging" not in ns:
-        import logging as _logging
-        ns["logging"] = _logging
-    exec("\n".join(chunks), ns)
-    return {name: ns[name] for name in method_names}, ns
 
 
 def build_fake_app(grid=17, clut_enabled=True):
@@ -111,32 +57,21 @@ def build_fake_app(grid=17, clut_enabled=True):
     wtpt = M[:, 0] + M[:, 1] + M[:, 2]
     scale = 1000.0 / float(M[1].sum())
 
-    fake = types.SimpleNamespace(
-        MHC2=dict(mhc2),
-        measure_gamut_xyz={
+    backend = CalibrationBackend(base_dir=PROJECT_ROOT)
+    backend.state.MHC2 = dict(mhc2)
+    backend.state.measure_gamut_xyz = {
             "red": (rxyz * scale).tolist(),
             "green": (gxyz * scale).tolist(),
             "blue": (bxyz * scale).tolist(),
             "white_paper": (wtpt * scale).tolist(),
             "white": (wtpt * scale).tolist(),
             "black": [0.0, 0.0, 0.0],
-        },
-        measured_pq=None,
-        icc_handle=ICCProfile(os.path.join(PROJECT_ROOT, "data", "hdr_empty.icc")),
-        _clut_cache=None,
-        clut_var=types.SimpleNamespace(get=lambda: clut_enabled),
-        clut_grid_var=types.SimpleNamespace(get=lambda: str(grid)),
-    )
-    # 绑定从 app.py 原样抽取的真实方法
-    # （`_make_display_model` 会调用 `_measured_color_samples` 取实测色卡；
-    #   `write_clut_if_enabled` 现在拆成了 `_make_clut_tags` + `_report_clut`
-    #   两步（保存时把前者放到工作线程），所以这几个方法都要一起抽取。）
-    methods, _ns = load_app_methods(
-        "_make_display_model", "_model_signature", "write_clut_if_enabled",
-        "_measured_color_samples", "_make_clut_tags", "_report_clut")
-    for name, fn in methods.items():
-        setattr(fake, name, types.MethodType(fn, fake))
-    return fake
+    }
+    backend.state.measured_pq = None
+    backend.state.clut_cache = None
+    backend.test_clut_enabled = clut_enabled
+    backend.test_clut_grid = grid
+    return backend
 
 
 def check(label, ok, detail=""):
@@ -146,12 +81,12 @@ def check(label, ok, detail=""):
 
 def main(grid=17):
     results = []
-    print(f"\n=== app.py CLUT 集成自检（网格 {grid}³）===")
+    print(f"\n=== calibration_backend CLUT 集成自检（网格 {grid}³）===")
 
     fake = build_fake_app(grid=grid, clut_enabled=True)
 
     # 1) 模型构造
-    model = fake._make_display_model()
+    model = fake.make_display_model()
     results.append(check("_make_display_model 成功", model is not None,
                          f"peak={model.peak_nits:.0f} nit, lut={model.lut_size} 项"))
     results.append(check("模型矩阵 Y 行合理",
@@ -159,15 +94,15 @@ def main(grid=17):
                          f"Y 行和 = {float(model.xyz_matrix[1].sum()):.5f}"))
 
     # 2) 模型指纹
-    sig1, sig2 = fake._model_signature(), fake._model_signature()
+    sig1, sig2 = fake.model_signature(), fake.model_signature()
     results.append(check("_model_signature 稳定", sig1 == sig2))
-    fake.MHC2["peak_luminance"] = 900.0
-    results.append(check("_model_signature 对输入变化敏感", fake._model_signature() != sig1))
-    fake.MHC2["peak_luminance"] = 1000.0
+    fake.state.MHC2["peak_luminance"] = 900.0
+    results.append(check("_model_signature 对输入变化敏感", fake.model_signature() != sig1))
+    fake.state.MHC2["peak_luminance"] = 1000.0
 
     # 3) 写入 CLUT
     t0 = time.time()
-    written, text = fake.write_clut_if_enabled()
+    written, text = fake.write_clut(fake.test_clut_enabled, fake.test_clut_grid)
     dt1 = time.time() - t0
     results.append(check("write_clut_if_enabled 返回标签", written == ["A2B0", "B2A0"],
                          f"{written}；提示：{text}"))
@@ -175,15 +110,15 @@ def main(grid=17):
 
     # 4) 缓存命中
     t0 = time.time()
-    written2, _ = fake.write_clut_if_enabled()
+    written2, _ = fake.write_clut(fake.test_clut_enabled, fake.test_clut_grid)
     dt2 = time.time() - t0
     results.append(check("二次调用命中缓存（不再重建）", dt2 < dt1 / 3,
                          f"首次 {dt1:.2f}s，二次 {dt2:.4f}s"))
 
     # 5) 保存并回读
-    fake.icc_handle.rebuild()
+    fake.state.icc_handle.rebuild()
     tmp = os.path.join(tempfile.gettempdir(), f"rwhc_app_integration_{grid}.icc")
-    fake.icc_handle.save(tmp)
+    fake.state.icc_handle.save(tmp)
     size = os.path.getsize(tmp)
 
     again = ICCProfile(tmp)
@@ -221,7 +156,7 @@ def main(grid=17):
 
     # 8) 关闭开关时不应写入
     fake2 = build_fake_app(grid=grid, clut_enabled=False)
-    w3, t3 = fake2.write_clut_if_enabled()
+    w3, t3 = fake2.write_clut(fake2.test_clut_enabled, fake2.test_clut_grid)
     results.append(check("开关关闭时不写入 CLUT", w3 is None and t3 is None))
 
     print(f"\n  生成文件：{tmp}")

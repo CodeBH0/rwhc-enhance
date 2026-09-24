@@ -8,6 +8,43 @@
 
 ---
 
+## 未发布
+
+- 将 protocol v1 扩展为可承载校准的多路复用边界：短 RPC response 与带序号的
+  `progress`/`log`/`prompt`/`result`/`error` 事件共用 NDJSON 管道，支持 prompt 回复、
+  单一长任务互斥和协作取消。新增严格的 `CalibrationRequest` schema v1 codec，明确
+  默认值、类型/范围校验、精确版本规则、未知字段拒绝和 backend 持有的历史数据 ID。
+- 迁移第一组真实 WinUI 功能：显示器发现/选择、所选显示器 SDR paper white、Argyll
+  仪器与测量模式均调用正式 `DisplayService`/`InstrumentService`，不是 UI mock。
+  扩展后的 smoke test 会覆盖真实设备 RPC、请求校验及带 prompt 的异步事件流，且不改变
+  ICC 状态或校准算法。
+- 在 `frontend/Rwhc.WinUI` 新增首版 C# + WinUI 3 替代前端骨架（XAML、
+  .NET 10、Windows App SDK 2.5.1）。现有 Python/Tk UI 只保留为功能和交互参考，
+  不建立长期双 UI 架构。
+- 新增 `backend_host.py`，通过由 WinUI 持有的 Python 子进程提供版本化、方法白名单的
+  UTF-8 NDJSON 通信。首条完整链路为
+  `WinUI → PythonBackendClient → backend.describe → CalibrationBackend`，可读取真实
+  profile/MHC2 就绪状态、历史数据数量、request 字段和 CLUT 能力，不触碰显示器 ICC
+  关联，也不改写校准算法。协议与生命周期见 `docs/FRONTEND_IPC.md`，无需硬件的
+  Python 验证工具为 `tools/verify_backend_host.py`。
+- 新增不依赖 GUI 的应用边界 `calibration_backend.py`。`CalibrationRequest`
+  将前端输入快照为普通数据，`CalibrationState` 统一持有 profile、测量、历史数据和
+  进程状态；Windows 显示器/ICC 操作、Argyll 探测与参数构造、外部进程生命周期、
+  历史数据还原、profile/CLUT 生成及校准流程顺序均已收归 backend service。
+  导入 backend 不会导入 Tkinter 或色度计运行时。
+- Tk 控制器现在负责把控件值适配为 backend request/state，不再拥有上述职责；
+  现有算法主体和数值路径保持不变。新增 `docs/BACKEND.md` 和无需硬件的
+  `tools/verify_calibration_backend.py` 边界测试。
+- 修复 backend 解耦后「请求尚未捕获时无法识别双历史数据模式」的回归；
+  `DisplayService` 的 Windows 设备边缘现可注入，GUI 历史校准测试通过该正式边界
+  隔离 ICC 安装/关联/解绑，不再触碰真实系统色彩配置。
+- 将 Tkinter 主界面从 `app.py` 拆到 `app_ui.py`。原先约 400 行的
+  `build_ui()` 已按菜单、设备/校色参数、历史数据、操作按钮和日志区拆成小型构建器；
+  控件冻结/恢复和显示器选中提示层也归入 UI 模块。校色回调及控制器上既有的控件属性
+  保持不变。
+- 新增无需显示器或色度计的 `tools/verify_app_ui.py`，检查主窗口构建、默认值以及
+  freeze/unfreeze 状态恢复。
+
 ## [2026-09-22] — v2026.09.22（GitHub 发布）
 
 > **发布信息：** 标签 `v2026.09.22`，打包为 `rwhc-v2026.09.22.zip` 附在
@@ -232,6 +269,3 @@
 - 维护者显示器（FFALCON R27U81）上的首个验证版本：上述修复后 12 色卡平均
   ΔE 1.16 / max 5.52。
 - 中间版本快照保留在 `archive\`。
-
-
-

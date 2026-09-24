@@ -3,6 +3,42 @@
 
 ![screenshot](https://github.com/CodeBH0/rwhc-enhance/blob/master/resources/ui_zh.png)
 
+## 前端迁移状态
+
+项目正在把前端替换为 **C# + WinUI 3**（Windows App SDK + XAML）。第一阶段代码位于
+`frontend/Rwhc.WinUI`，目前已经具备可构建运行的 WinUI 外壳，以及连接现有 Python
+backend 的真实进程边界。现有 Python/Tk UI 只在 WinUI 达到功能完整前保留为功能和
+交互参考；项目不会长期维护两套正式 UI。
+
+当前 WinUI 范围：
+
+- .NET 10、WinUI 3、XAML 与 Windows App SDK 2.5.1；
+- WinUI 持有 Python 子进程，通过版本化、方法白名单的 UTF-8 NDJSON 协议通信；
+  短 RPC 与异步 progress/log/prompt/result/error 事件可并行复用同一管道，并支持
+  协作取消；
+- 已为 `CalibrationRequest` 建立严格、版本化的 JSON 契约；
+- 显示器发现/选择、SDR paper white、Argyll 仪器与测量模式均已调用真实 backend；
+- 这些调用保持只读，不改写校准算法，也不改变显示器 ICC 关联。
+
+目前完整校准流程仍请运行 `python app.py`。如需构建和运行 WinUI 迁移骨架，请先安装
+.NET 10 SDK 和项目 Python 依赖，然后在项目根目录执行：
+
+```powershell
+dotnet build frontend\Rwhc.WinUI\Rwhc.WinUI.csproj -c Debug -p:Platform=x64
+dotnet run --project frontend\Rwhc.WinUI\Rwhc.WinUI.csproj -c Debug
+```
+
+WinUI 页面会自动读取真实设备环境，也可手动刷新。还可以运行覆盖请求、事件和设备调用的
+自动 smoke test：
+
+```powershell
+frontend\Rwhc.WinUI\bin\x64\Debug\net10.0-windows10.0.26100.0\win-x64\Rwhc.WinUI.exe --smoke-test
+```
+
+退出码为 `0` 表示 WinUI runtime 已启动，并且 C# client 成功读到就绪的 Python
+backend profile。详细设计见 [IPC 协议](docs/FRONTEND_IPC.md)、
+[backend 边界](docs/BACKEND.md)和 [WinUI 工程说明](frontend/Rwhc.WinUI/README.md)。
+
 ## 使用方法
 
 1. **获取项目代码**  
