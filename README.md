@@ -21,12 +21,28 @@ Current WinUI scope:
 - a strict, versioned JSON contract for `CalibrationRequest`;
 - real backend calls for display discovery/selection, SDR paper white, and
   Argyll instrument/mode options;
+- a first end-to-end `calibration.start` path that runs the existing gamut,
+  PQ and chromaticity algorithms with asynchronous progress, logs, prompts,
+  cancellation and deterministic measurement-process/preview cleanup;
 - no calibration-algorithm rewrite and no display ICC changes from these
   read-only calls.
 
-The complete calibration workflow still runs through `python app.py` for now.
-To build and run the WinUI migration shell, install the .NET 10 SDK and the
-Python dependencies, then run from the repository root:
+The WinUI page is the new application entry point. It exposes live calibration
+and complete gray+color history replay, but does not yet provide profile
+saving/export or accuracy measurement. `app.py` remains available only as the
+legacy Tk UI while migration is in progress.
+
+Install the .NET 10 SDK and Python dependencies, then use the one-command
+launcher from the repository root:
+
+```powershell
+.\run-winui.cmd
+```
+
+The launcher calls `run-winui.ps1`, checks the Python backend import, builds the WinUI project when
+needed, and starts the application. WinUI starts and owns `backend_host.py`
+automatically; users must not launch the backend host separately. The equivalent
+development commands are:
 
 ```powershell
 dotnet build frontend\Rwhc.WinUI\Rwhc.WinUI.csproj -c Debug -p:Platform=x64
@@ -64,12 +80,42 @@ ready Python backend profile. See [the IPC protocol](docs/FRONTEND_IPC.md),
    pip install -r requirements.txt
    ```
 
-4. **Run the Program**
+4. **Run the new WinUI application (recommended)**
 
-   ```bash
-   python app.py
+   ```powershell
+   .\run-winui.cmd
    ```
-   Click the “Calibrate” button to start calibration.
+
+   The application manages the Python backend process itself. Select live
+   measurement or complete historical gray/color data, review the parameters,
+   then start calibration.
+
+5. **Legacy Tk UI**
+
+   `python app.py` starts the legacy Tk frontend. It is retained during the
+   migration for features not yet available in WinUI; it is not the new
+   application entry point.
+
+### History replay without a colorimeter
+
+If `hc.log` contains at least one complete grayscale run and one complete color
+run, WinUI lists them in the two history selectors. When no colorimeter is
+detected, the latest complete pair is selected automatically. Click **Use
+historical data calibration** to run the real `calibration.start` workflow.
+The backend resolves the opaque history IDs, runs the unchanged calibration
+math, and reports progress, logs and the terminal result without launching
+`dogegen` or `spotread`. Historical data must belong to the same display and
+display state.
+
+For a hardware-isolated process-boundary verification after building:
+
+```powershell
+frontend\Rwhc.WinUI\bin\x64\Debug\net10.0-windows10.0.26100.0\win-x64\Rwhc.WinUI.exe --history-smoke-test
+```
+
+This explicit test mode replaces only the Windows display/ICC edge; history
+parsing, IPC, request validation, workflow and calibration algorithms remain
+the production implementations.
 
 ## Color Measurement Devices
 

@@ -19,6 +19,7 @@ public sealed class PythonBackendClient : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Task _stdoutPump;
     private readonly Task _stderrPump;
+    private readonly ConcurrentQueue<string> _recentStderr = new();
     private long _nextRequestId;
     private bool _disposed;
 
@@ -32,6 +33,12 @@ public sealed class PythonBackendClient : IAsyncDisposable
     public event EventHandler<BackendEvent>? EventReceived;
 
     public static PythonBackendClient CreateForDevelopment()
+        => Create(replayTestHardware: false);
+
+    public static PythonBackendClient CreateForHistoryReplayTest()
+        => Create(replayTestHardware: true);
+
+    private static PythonBackendClient Create(bool replayTestHardware)
     {
         string root = LocateBackendRoot();
         string python = LocatePython(root);
@@ -49,13 +56,35 @@ public sealed class PythonBackendClient : IAsyncDisposable
             StandardOutputEncoding = utf8WithoutBom,
             StandardErrorEncoding = utf8WithoutBom,
         };
+        // ProcessStartInfo's stream encodings configure the .NET readers and
+        // writers, but do not force Python's own redirected stdio encoding.
+        // Without these variables a Chinese Windows code page can emit GBK
+        // bytes that the NDJSON client then correctly (but incompatibly)
+        // decodes as UTF-8.
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
+        startInfo.Environment["PYTHONUTF8"] = "1";
         startInfo.ArgumentList.Add(Path.Combine(root, "backend_host.py"));
         startInfo.ArgumentList.Add("--stdio");
         startInfo.ArgumentList.Add("--base-dir");
         startInfo.ArgumentList.Add(root);
+        if (replayTestHardware)
+        {
+            startInfo.ArgumentList.Add("--replay-test-hardware");
+        }
 
-        Process process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("无法启动 Python backend 进程。");
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("无法创建 Python backend 进程。");
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"无法启动 Python backend。请确认已安装 Python 依赖，或设置 RWHC_PYTHON。" +
+                $"{Environment.NewLine}解释器：{python}{Environment.NewLine}{exception.Message}",
+                exception);
+        }
         return new PythonBackendClient(process);
     }
 
@@ -77,11 +106,23 @@ public sealed class PythonBackendClient : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         CallAsync<InstrumentOptions>("instrument.listOptions", new { }, cancellationToken);
 
+    public Task<HistoryList> ListHistoryAsync(
+        CancellationToken cancellationToken = default) =>
+        CallAsync<HistoryList>("history.list", new { }, cancellationToken);
+
     public Task<RequestValidationResult> ValidateCalibrationRequestAsync(
         CalibrationRequestWire request,
         CancellationToken cancellationToken = default) =>
         CallAsync<RequestValidationResult>(
             "calibration.validateRequest",
+            new { request },
+            cancellationToken);
+
+    public Task<OperationAccepted> StartCalibrationAsync(
+        CalibrationRequestWire request,
+        CancellationToken cancellationToken = default) =>
+        CallAsync<OperationAccepted>(
+            "calibration.start",
             new { request },
             cancellationToken);
 
@@ -194,7 +235,8 @@ public sealed class PythonBackendClient : IAsyncDisposable
                     if (!cancellationToken.IsCancellationRequested)
                     {
                         terminalError = new InvalidOperationException(
-                            "Python backend stdout 已关闭。");
+                            "Python backend 启动后意外退出。请检查 Python 依赖与项目路径。" +
+                            FormatStderrTail());
                     }
                     break;
                 }
@@ -290,7 +332,7 @@ public sealed class PythonBackendClient : IAsyncDisposable
         return File.Exists(projectPython) ? projectPython : "python.exe";
     }
 
-    private static async Task PumpStandardErrorAsync(
+    private async Task PumpStandardErrorAsync(
         Process process,
         CancellationToken cancellationToken)
     {
@@ -303,12 +345,25 @@ public sealed class PythonBackendClient : IAsyncDisposable
                 {
                     return;
                 }
+                _recentStderr.Enqueue(line);
+                while (_recentStderr.Count > 20)
+                {
+                    _recentStderr.TryDequeue(out _);
+                }
                 Debug.WriteLine($"[python] {line}");
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    private string FormatStderrTail()
+    {
+        string[] lines = _recentStderr.ToArray();
+        return lines.Length == 0
+            ? ""
+            : $"{Environment.NewLine}Python 错误：{string.Join(Environment.NewLine, lines)}";
     }
 
     public async ValueTask DisposeAsync()
@@ -331,6 +386,10 @@ public sealed class PythonBackendClient : IAsyncDisposable
                 _process.Kill(entireProcessTree: true);
                 await _process.WaitForExitAsync();
             }
+        }
+        catch (Exception) when (_process.HasExited)
+        {
+            // A failed backend can close stdin before the UI disposes the client.
         }
         finally
         {

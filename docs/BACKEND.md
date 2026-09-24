@@ -40,12 +40,11 @@ The frontend owns only interaction policy:
 - schedule backend work and marshal completion back to its UI thread;
 - choose save paths and open documentation/tools.
 
-The Tk adapter currently retains the long-running measurement algorithms
-(`calibrate_pq`, `calibrate_chromaticity`, and live accuracy measurement) for
-compatibility. Their calibration options now come from `CalibrationRequest`,
-not Tk controls, and their persistent state/processes are backend-owned. They
-are the next migration seam if the Python backend is later exposed through
-IPC to WinUI; this refactor intentionally does not rewrite their mathematics.
+`calibration_workflow.py` is the frontend-neutral adapter for the existing
+gamut, `calibrate_pq`, and `calibrate_chromaticity` steps. It keeps the sampling
+and mathematics unchanged while replacing Tk preview toggles, message boxes and
+thread callbacks with explicit measurement, prompt, progress and cancellation
+ports. Live accuracy measurement remains in the Tk adapter for later migration.
 
 ## WinUI process adapter
 
@@ -58,6 +57,21 @@ or calibration logic. `calibration_contract.py` owns the strict JSON codec for
 canonical-default rules. See `docs/FRONTEND_IPC.md` for framing, lifecycle,
 events, cancellation, prompts, and the currently implemented methods.
 
+`calibration.start` validates the request again, installs the immutable snapshot,
+runs `CalibrationWorkflow` on the single operation worker, forwards Python logs
+to that operation and always cleans measurement processes and temporary preview
+ICC associations. Cancellation also asks the process service to terminate a
+blocked meter read instead of waiting only for the next sampling boundary.
+
+The WinUI history path calls `history.list` and sends the selected opaque gray
+and color IDs through the same `calibration.start` method. With both histories
+resolved, `CalibrationWorkflow` follows its normal history-only branches and
+does not create meter/pattern processes. `backend_host.py --replay-test-hardware`
+is reserved for the explicit WinUI history smoke test: it injects a no-op HDR
+display/ICC platform while leaving request validation, history parsing, backend
+state and calibration algorithms unchanged. It works from a temporary copy of
+`hc.log`, so smoke verification does not append to the user's measurement log.
+
 ## Verification
 
 Run without a display or colorimeter:
@@ -69,6 +83,9 @@ Run without a display or colorimeter:
 .\.venv314\Scripts\python.exe tools/verify_backend_host.py
 .\.venv314\Scripts\python.exe tools/verify_calibration_contract.py
 ```
+
+After building WinUI, `Rwhc.WinUI.exe --history-smoke-test` verifies the full
+C# process boundary and history workflow without display or colorimeter I/O.
 
 `verify_calibration_backend.py` also asserts that importing the backend does
 not import `tkinter`.

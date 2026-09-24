@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-09-24] WinUI calibration operation
+
+- Added the real `calibration.start` asynchronous operation and a
+  frontend-neutral adapter around the existing gamut, PQ and chromaticity
+  algorithms.
+- Connected operation-scoped progress, logs, instrument prompts, result/error
+  events and cooperative cancellation, including active measurement-process
+  termination and temporary preview ICC cleanup.
+- Added a minimal WinUI start/cancel/progress/log/prompt surface and a
+  hardware-free end-to-end backend verification using the real algorithms.
+- Completed the first usable WinUI loop: history lists and core request
+  parameters are selectable, no-meter systems automatically choose the latest
+  complete gray/color pair, and result/error guidance is presented in plain
+  language.
+- Added `run-winui.cmd`/`run-winui.ps1` as the recommended application launcher and clarified
+  that `app.py` is the legacy Tk UI. WinUI continues to own the Python backend
+  process lifecycle.
+- Added `--history-smoke-test`, which runs C# → IPC → history resolver → real
+  calibration workflow → result while replacing only the Windows display/ICC
+  hardware edge.
+- Fixed mojibake in WinUI task logs on Chinese Windows by forcing UTF-8 in both
+  the Python child environment and the backend host stdio streams. The history
+  smoke test now asserts that real Chinese log events survive the C# boundary
+  without replacement characters.
+
 > This project is developed by an maintainer who is not a professional in color
 > science, so the calibration logic may not be optimal. If you find issues or
 > have better ideas, contributions and feedback are very welcome.

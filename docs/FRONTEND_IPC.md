@@ -5,6 +5,11 @@ uses UTF-8 **without a BOM**, with one compact JSON object per line (NDJSON)
 over redirected standard input/output. Python diagnostics use standard error;
 standard output is exclusively protocol frames.
 
+The WinUI launcher sets `PYTHONIOENCODING=utf-8` and `PYTHONUTF8=1`, while the
+host also reconfigures all three Python stdio streams to UTF-8. Setting only
+`.NET ProcessStartInfo.StandardOutputEncoding` is insufficient: it configures
+the C# reader but does not control the encoding Python uses to produce bytes.
+
 This is a migration seam, not a permanent second UI architecture. WinUI owns
 presentation and interaction policy while the existing algorithms and native
 Python dependencies remain behind `CalibrationBackend`.
@@ -27,6 +32,10 @@ During development, `RWHC_PYTHON` overrides the interpreter and
 `RWHC_BACKEND_ROOT` overrides the application root. Otherwise the client
 prefers `.venv314\Scripts\python.exe` and searches parent directories for
 `backend_host.py`.
+
+Normal users start WinUI (preferably through `run-winui.cmd`); they never start
+`backend_host.py` themselves. `--replay-test-hardware` is an internal host flag
+used only by the WinUI `--history-smoke-test` process-boundary verification.
 
 ## Protocol compatibility
 
@@ -78,6 +87,8 @@ and `message`; validation errors additionally identify the field in `details`.
 - `history.list`: opaque, backend-owned history IDs and display labels.
 - `calibration.validateRequest`: parses, validates, resolves history IDs, and
   returns the canonical request without changing calibration state.
+- `calibration.start`: revalidates the request and starts the real gamut → PQ →
+  chromaticity → post-gamut pipeline. It returns an operation ID immediately.
 - `operation.cancel`: cooperative cancellation request.
 - `prompt.respond`: reply to one outstanding prompt.
 - `diagnostics.startEventProbe`: verification-only operation covering all
@@ -130,8 +141,8 @@ Rules:
 - Historical runs are never accepted as client-supplied Python-shaped blobs.
   The client sends opaque IDs from `history.list`; the host resolves them
   against its current parsed history before constructing `CalibrationRequest`.
-- `calibration.validateRequest` is read-only. A future `calibration.start` must
-  validate again immediately before installing the immutable snapshot into
+- `calibration.validateRequest` is read-only. `calibration.start` validates
+  again immediately before installing the immutable snapshot into
   backend state, avoiding time-of-check/time-of-use drift.
 
 ## Asynchronous operations
@@ -162,16 +173,19 @@ Defined events:
 
 Cancellation is cooperative: `operation.cancel` sets the operation token,
 wakes a pending prompt, and returns whether an active operation was found.
-Workers must check cancellation between measurement units and during waits.
-The future calibration worker must also clean `dogegen`/`spotread` and preview
-ICC state in `finally`; the transport cannot make an arbitrary blocking native
-meter read instantly cancellable.
+Workers check cancellation between measurement units and during waits. The
+calibration worker also terminates `dogegen`/`spotread` on cancellation and
+cleans measurement processes plus preview ICC state in `finally`; instrument
+startup can still be bounded by the adapter's own startup timeout.
 
-## Remaining calibration integration
+## Calibration integration status
 
-The transport boundary is ready, but `calibration.start` is intentionally not
-implemented yet. Before moving the unchanged algorithms out of the Tk adapter,
-the backend still needs explicit ports for pattern output/meter reads, preview
-ICC policy, operation-scoped logging, prompt kinds used by meter setup, save
-destination handling, and deterministic cleanup/rollback. These are adapter
-interfaces around existing algorithms, not permission to rewrite their maths.
+The first complete calibration operation is implemented. Meter setup and
+placement use semantic prompts; every measurement phase reports progress;
+algorithm logging is operation-scoped; cancellation terminates active measurement
+processes; and temporary preview profiles are removed in `finally`. The terminal
+result reports profile readiness and a compact measurement/luminance summary.
+
+Saving/exporting the generated profile, full option/history UI, accuracy
+measurement and richer recovery policy remain future work. They do not change
+the `calibration.start` transport contract.

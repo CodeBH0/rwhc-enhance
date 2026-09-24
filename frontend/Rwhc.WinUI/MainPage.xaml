@@ -11,6 +11,8 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <StackPanel Spacing="8">
@@ -59,6 +61,8 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <TextBlock VerticalAlignment="Center" Text="显示器" />
@@ -77,20 +81,79 @@
                         <TextBlock Grid.Row="3" VerticalAlignment="Center" Text="测量模式" />
                         <ComboBox x:Name="ModeComboBox" Grid.Row="3" Grid.Column="1"
                                   MinWidth="420" PlaceholderText="未检测到测量模式" />
+
+                        <TextBlock Grid.Row="4" VerticalAlignment="Center" Text="历史灰阶" />
+                        <ComboBox x:Name="GrayHistoryComboBox" Grid.Row="4" Grid.Column="1"
+                                  MinWidth="420" PlaceholderText="没有可用历史灰阶"
+                                  SelectionChanged="CalibrationInput_SelectionChanged" />
+
+                        <TextBlock Grid.Row="5" VerticalAlignment="Center" Text="历史颜色" />
+                        <ComboBox x:Name="ColorHistoryComboBox" Grid.Row="5" Grid.Column="1"
+                                  MinWidth="420" PlaceholderText="没有可用历史颜色"
+                                  SelectionChanged="CalibrationInput_SelectionChanged" />
                     </Grid>
 
                     <TextBlock x:Name="DeviceSummaryText" TextWrapping="Wrap" Opacity="0.72"
                                Text="数据将由 DisplayService 与 InstrumentService 提供。" />
+                    <InfoBar x:Name="GuidanceInfoBar" IsOpen="True" IsClosable="False"
+                             Severity="Informational" Title="正在检查可用校准方式"
+                             Message="连接 backend 后会显示下一步操作。" />
                 </StackPanel>
             </Border>
 
-            <InfoBar x:Name="ResultInfoBar" Grid.Row="3" Margin="0,20,0,0"
+            <Border Grid.Row="3" Margin="0,20,0,0" Padding="24" CornerRadius="12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="校准参数" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Grid ColumnSpacing="18" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="180" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock VerticalAlignment="Center" Text="灰阶采样数" />
+                        <ComboBox x:Name="GrayscaleSamplesComboBox" Grid.Column="1" MinWidth="240" />
+                        <TextBlock Grid.Row="1" VerticalAlignment="Center" Text="颜色样本集" />
+                        <ComboBox x:Name="ColorSampleSetComboBox" Grid.Row="1" Grid.Column="1" MinWidth="240" />
+                        <TextBlock Grid.Row="2" VerticalAlignment="Center" Text="目标白点 x,y" />
+                        <TextBox x:Name="WhitePointTextBox" Grid.Row="2" Grid.Column="1"
+                                 MinWidth="240" Text="0.3127,0.3290" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <InfoBar x:Name="ResultInfoBar" Grid.Row="4" Margin="0,20,0,0"
                      IsOpen="False" IsClosable="True" />
 
-            <StackPanel Grid.Row="4" Margin="0,28,0,0" Spacing="8">
+            <Border Grid.Row="5" Margin="0,20,0,0" Padding="24" CornerRadius="12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="校准任务" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button x:Name="StartCalibrationButton" Click="StartCalibrationButton_Click"
+                                Content="开始校准" IsEnabled="False" />
+                        <Button x:Name="CancelCalibrationButton" Click="CancelCalibrationButton_Click"
+                                Content="取消" IsEnabled="False" />
+                    </StackPanel>
+                    <ProgressBar x:Name="CalibrationProgress" Minimum="0" Maximum="1"
+                                 Value="0" IsIndeterminate="False" />
+                    <TextBlock x:Name="CalibrationStatusText" Text="尚未开始" TextWrapping="Wrap" />
+                    <TextBox x:Name="CalibrationLogText" Header="本次任务日志" Height="160"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Row="6" Margin="0,28,0,0" Spacing="8">
                 <TextBlock Text="本轮边界" Style="{StaticResource SubtitleTextBlockStyle}" />
                 <TextBlock TextWrapping="Wrap"
-                           Text="短 RPC、异步 progress/log/prompt/result/error、协作取消和 CalibrationRequest v1 校验已建立；完整校准入口尚未接入。" />
+                           Text="本页只提供第一次端到端校准入口；完整设置、历史选择、保存与准确度测量将在后续迁移。" />
             </StackPanel>
         </Grid>
     </ScrollViewer>

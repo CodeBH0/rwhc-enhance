@@ -16,7 +16,9 @@ import json
 import logging
 import os
 import queue
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Optional, TextIO
@@ -29,6 +31,11 @@ from calibration_contract import (
     request_from_wire,
     request_to_wire,
 )
+from calibration_workflow import (
+    CalibrationAborted,
+    CalibrationWorkflow,
+    OperationLogHandler,
+)
 from color_history import run_label as color_run_label
 
 
@@ -36,6 +43,49 @@ PROTOCOL_VERSION = 1
 PROTOCOL_MINOR_VERSION = 1
 MAX_REQUEST_BYTES = 1024 * 1024
 EVENT_TYPES = ("progress", "log", "prompt", "result", "error")
+
+
+class ReplayTestDisplayPlatform:
+    """Hardware-free display edge used only by the explicit history smoke test."""
+
+    @staticmethod
+    def enumerate_displays():
+        return [
+            {
+                "path_index": 0,
+                "adapter_luid": {"low_part": 0, "high_part": 0},
+                "source": {"id": 0, "gdi_name": r"\\.\DISPLAY_REPLAY"},
+                "target": {
+                    "device_path": r"\\?\DISPLAY#REPLAY#HISTORY#{TEST}",
+                    "friendly_name": "History replay display",
+                    "sdr_white_level_nits": 160.0,
+                    "advanced_color": {
+                        "enabled": True,
+                        "wide_color_enforced": False,
+                    },
+                },
+            }
+        ]
+
+    @staticmethod
+    def monitor_rect(_gdi_name):
+        return {"left": 0, "top": 0, "right": 3840, "bottom": 2160}
+
+    @staticmethod
+    def install_profile(_path):
+        pass
+
+    @staticmethod
+    def add_profile_association(_info, _filename):
+        pass
+
+    @staticmethod
+    def remove_profile_association(_info, _filename):
+        pass
+
+    @staticmethod
+    def uninstall_profile(_filename):
+        pass
 
 
 class ProtocolError(Exception):
@@ -81,6 +131,8 @@ class OperationContext:
         self.cancel_event = threading.Event()
         self._prompts: dict[str, queue.Queue] = {}
         self._prompt_lock = threading.Lock()
+        self._cancel_callbacks: list[Callable[[], None]] = []
+        self._cancel_callback_lock = threading.Lock()
 
     def emit(self, event: str, payload: dict[str, Any]) -> None:
         if event not in EVENT_TYPES:
@@ -127,6 +179,12 @@ class OperationContext:
     def wait(self, seconds: float) -> None:
         if self.cancel_event.wait(max(0.0, seconds)):
             raise OperationCancelled()
+
+    def add_cancel_callback(self, callback: Callable[[], None]) -> None:
+        with self._cancel_callback_lock:
+            self._cancel_callbacks.append(callback)
+        if self.cancel_event.is_set():
+            threading.Thread(target=callback, daemon=True).start()
 
     def prompt(
         self,
@@ -182,6 +240,10 @@ class OperationContext:
 
     def cancel(self) -> None:
         self.cancel_event.set()
+        with self._cancel_callback_lock:
+            callbacks = list(self._cancel_callbacks)
+        for callback in callbacks:
+            threading.Thread(target=callback, daemon=True).start()
 
 
 class OperationManager:
@@ -299,6 +361,7 @@ class BackendHost:
             "instrument.listOptions": self._instrument_options,
             "history.list": self._history_list,
             "calibration.validateRequest": self._validate_request,
+            "calibration.start": self._start_calibration,
             "diagnostics.startEventProbe": self._start_event_probe,
             "operation.cancel": self._cancel_operation,
             "prompt.respond": self._respond_prompt,
@@ -340,6 +403,7 @@ class BackendHost:
                 "interactive-prompts",
                 "display-discovery",
                 "instrument-options",
+                "calibration-start",
             ],
         }
 
@@ -462,6 +526,63 @@ class BackendHost:
         operation_id = self.operations.start(worker)
         return {"operationId": operation_id, "status": "accepted"}
 
+    def _start_calibration(self, params: dict[str, Any]) -> dict[str, Any]:
+        # Validate again at the operation boundary; a previous validateRequest
+        # response is never treated as authority to mutate backend state.
+        try:
+            request = request_from_wire(
+                params.get("request"),
+                history_resolver=self._resolve_history,
+            )
+        except RequestValidationError as exc:
+            raise ProtocolError(
+                "validation_error",
+                str(exc),
+                {"field": exc.field, "reason": exc.message},
+            ) from exc
+
+        def worker(context: OperationContext) -> dict[str, Any]:
+            handler = OperationLogHandler(context)
+            file_handler = logging.FileHandler(
+                self.backend.log_path, encoding="utf-8"
+            )
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"
+                )
+            )
+            root_logger = logging.getLogger()
+            previous_level = root_logger.level
+            root_logger.setLevel(logging.INFO)
+            root_logger.addHandler(handler)
+            root_logger.addHandler(file_handler)
+            context.add_cancel_callback(self._cancel_measurement_processes)
+            try:
+                self.backend.begin_calibration(request)
+                context.log("info", "Calibration started")
+                return CalibrationWorkflow(self.backend, context).run()
+            except CalibrationAborted as exc:
+                raise OperationCancelled() from exc
+            except ValueError as exc:
+                raise ProtocolError(
+                    "calibration_precondition_failed", str(exc)
+                ) from exc
+            finally:
+                root_logger.removeHandler(handler)
+                root_logger.removeHandler(file_handler)
+                file_handler.close()
+                root_logger.setLevel(previous_level)
+
+        operation_id = self.operations.start(worker)
+        return {"operationId": operation_id, "status": "accepted"}
+
+    def _cancel_measurement_processes(self) -> None:
+        try:
+            self.backend.processes.cleanup_measurement_processes()
+        except Exception:
+            logging.exception("Failed to stop measurement processes during cancellation")
+
     def _cancel_operation(self, params: dict[str, Any]) -> dict[str, Any]:
         operation_id = params.get("operationId")
         if not isinstance(operation_id, str) or not operation_id:
@@ -566,6 +687,12 @@ def serve_stdio(host: BackendHost, input_stream: TextIO, output_stream: TextIO) 
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The wire protocol is UTF-8 regardless of the Windows console code page.
+    # Reconfigure defensively even when a non-WinUI client did not provide
+    # PYTHONIOENCODING/PYTHONUTF8 in the child environment.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="strict")
     parser = argparse.ArgumentParser(description="rwhc WinUI backend host")
     parser.add_argument("--stdio", action="store_true", help="serve NDJSON on stdio")
     parser.add_argument(
@@ -573,13 +700,31 @@ def main(argv: list[str] | None = None) -> int:
         default=os.path.dirname(os.path.abspath(__file__)),
         help="repository/application data root",
     )
+    parser.add_argument(
+        "--replay-test-hardware",
+        action="store_true",
+        help="use the no-op display edge for the explicit history replay smoke test",
+    )
     args = parser.parse_args(argv)
     if not args.stdio:
         parser.error("--stdio is required")
 
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-    host = BackendHost(args.base_dir)
-    serve_stdio(host, sys.stdin, sys.stdout)
+    display_platform = ReplayTestDisplayPlatform() if args.replay_test_hardware else None
+    host = BackendHost(args.base_dir, display_platform=display_platform)
+    replay_temp = None
+    if args.replay_test_hardware:
+        replay_temp = tempfile.TemporaryDirectory(prefix="rwhc-history-smoke-")
+        isolated_log = os.path.join(replay_temp.name, "hc.log")
+        source_log = os.path.join(os.path.abspath(args.base_dir), "hc.log")
+        if os.path.isfile(source_log):
+            shutil.copyfile(source_log, isolated_log)
+        host.backend.log_path = isolated_log
+    try:
+        serve_stdio(host, sys.stdin, sys.stdout)
+    finally:
+        if replay_temp is not None:
+            replay_temp.cleanup()
     return 0
 
 

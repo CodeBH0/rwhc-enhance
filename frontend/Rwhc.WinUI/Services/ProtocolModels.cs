@@ -41,6 +41,27 @@ public sealed record InstrumentOptions(
     [property: JsonPropertyName("instruments")] InstrumentOption[] Instruments,
     [property: JsonPropertyName("modes")] InstrumentOption[] Modes);
 
+public sealed record GrayHistoryOption(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("label")] string Label,
+    [property: JsonPropertyName("samples")] int Samples)
+{
+    public override string ToString() => Label;
+}
+
+public sealed record ColorHistoryOption(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("label")] string Label,
+    [property: JsonPropertyName("samples")] int Samples,
+    [property: JsonPropertyName("sampleSet")] string? SampleSet)
+{
+    public override string ToString() => Label;
+}
+
+public sealed record HistoryList(
+    [property: JsonPropertyName("gray")] GrayHistoryOption[] Gray,
+    [property: JsonPropertyName("color")] ColorHistoryOption[] Color);
+
 public sealed record EetfArguments(
     [property: JsonPropertyName("sourceMax")] double SourceMax = 10000,
     [property: JsonPropertyName("sourceMin")] double SourceMin = 0,

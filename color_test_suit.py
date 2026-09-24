@@ -2,6 +2,7 @@
 from meta_data import *
 from convert_utils import *
 from matrix import *
+import logging
 import numpy as np
 from lut import pq_oetf, pq_eotf 
 
@@ -244,10 +245,10 @@ def get_srgb_calibrate_XYZ_suit(color_gamut, paper_white_nit=200):
         for x, y in sRGB_test_colors_xy:
             Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
             if Y_max == 0:
-                print(f"skip Ymax=0 srgb {x} {y}")
+                logging.info("skip Ymax=0 srgb %s %s", x, y)
                 continue
             XYZ = xyY_to_XYZ([x, y, Y_max])
-            print(f"white {Yw}nit Y_max for sRGB {x} {y} -> {Y_max} {XYZ.tolist()}")
+            logging.info("white %snit Y_max for sRGB %s %s -> %s %s", Yw, x, y, Y_max, XYZ.tolist())
             ret.append(XYZ.tolist())
     return ret
 
@@ -271,10 +272,10 @@ def get_P3D65_calibrate_XYZ_suit(color_gamut, paper_white_nit=200):
         for x, y in P3D65_test_colors_xy:
             Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
             if Y_max == 0:
-                print(f"skip Ymax=0 p3 {x} {y}")
+                logging.info("skip Ymax=0 p3 %s %s", x, y)
                 continue
             XYZ = xyY_to_XYZ([x, y, Y_max])
-            print(f"white {Yw}nit Y_max for P3D65 {x} {y} -> {Y_max} {XYZ.tolist()}")
+            logging.info("white %snit Y_max for P3D65 %s %s -> %s %s", Yw, x, y, Y_max, XYZ.tolist())
             ret.append(XYZ.tolist())
     return ret
 
@@ -298,10 +299,10 @@ def get_srgb_measure_XYZ_suit(color_gamut):
         for x, y in sRGB_test_colors_xy:
             Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
             if Y_max == 0:
-                print(f"skip Ymax=0 srgb {x} {y}")
+                logging.info("skip Ymax=0 srgb %s %s", x, y)
                 continue
             XYZ = xyY_to_XYZ([x, y, Y_max])
-            print(f"white {Yw}nit Y_max for sRGB {x} {y} -> {Y_max} {XYZ.tolist()}")
+            logging.info("white %snit Y_max for sRGB %s %s -> %s %s", Yw, x, y, Y_max, XYZ.tolist())
             ret.append(XYZ.tolist())
     return ret
 
@@ -325,10 +326,10 @@ def get_P3D65_measure_XYZ_suit(color_gamut):
         for x, y in P3D65_test_colors_xy:
             Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
             if Y_max == 0:
-                print(f"skip Ymax=0 p3 {x} {y}")
+                logging.info("skip Ymax=0 p3 %s %s", x, y)
                 continue
             XYZ = xyY_to_XYZ([x, y, Y_max])
-            print(f"white {Yw}nit Y_max for P3D65 {x} {y} -> {Y_max} {XYZ.tolist()}")
+            logging.info("white %snit Y_max for P3D65 %s %s -> %s %s", Yw, x, y, Y_max, XYZ.tolist())
             ret.append(XYZ.tolist())
     return ret
 
@@ -360,11 +361,11 @@ def get_srgb_24_calibrate_XYZ_suit(color_gamut, paper_white_nit=200):
             Y_patch = float(xyz_rel[1]) * Yw    # 色卡真实亮度（nits）
             Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
             if Y_max == 0:
-                print(f"skip Ymax=0 srgb24 {name} {x} {y}")
+                logging.info("skip Ymax=0 srgb24 %s %s %s", name, x, y)
                 continue
             Y_patch = min(Y_patch, Y_max)       # 窄色域保护：截断到可显示亮度
             XYZ = xyY_to_XYZ([x, y, Y_patch])
-            print(f"srgb24 {name} ({r},{g},{b}) xy=({x:.4f},{y:.4f}) Y={Y_patch:.1f}nit -> {XYZ.tolist()}")
+            logging.info("srgb24 %s (%s,%s,%s) xy=(%.4f,%.4f) Y=%.1fnit -> %s", name, r, g, b, x, y, Y_patch, XYZ.tolist())
             ret.append(XYZ.tolist())
     return ret
 
@@ -388,14 +389,14 @@ def get_srgb_24_measure_XYZ_suit(color_gamut):
             x, y = XYZ_to_xy(xyz_rel)
             Y_max = ymax_from_defined_primaries(xy_R, xy_G, xy_B, xy_W, (x, y), caps)*Yw
             if Y_max == 0:
-                print(f"skip Ymax=0 srgb24 {name} {x} {y}")
+                logging.info("skip Ymax=0 srgb24 %s %s %s", name, x, y)
                 continue
             XYZ = xyY_to_XYZ([x, y, Y_max])
-            print(f"white {Yw}nit Y_max for srgb24 {name} ({r},{g},{b}) -> {Y_max} {XYZ.tolist()}")
+            logging.info("white %snit Y_max for srgb24 %s (%s,%s,%s) -> %s %s", Yw, name, r, g, b, Y_max, XYZ.tolist())
             ret.append(XYZ.tolist())
     return ret
 
 
 
 if __name__ == "__main__":
-    pass    
+    pass

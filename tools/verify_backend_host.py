@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+
+import numpy as np
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from backend_host import BackendHost, _handle_line  # noqa: E402
+from convert_utils import BT2020_PQ_rgb_to_XYZ  # noqa: E402
 
 
 class ProtocolClient:
@@ -120,6 +125,165 @@ def main():
     }))
     check("request validation errors are structured", invalid["error"]["code"] == "validation_error")
     check("validation error includes field details", invalid["error"]["details"]["field"] == "request")
+
+    # Exercise calibration.start through the real algorithms with only the two
+    # physical I/O edges replaced.  This catches accidental fallback to a fake
+    # calibration operation while remaining deterministic on CI machines.
+    class CalibrationDisplayPlatform(FakeDisplayPlatform):
+        def install_profile(self, _path):
+            pass
+
+        def add_profile_association(self, _info, _filename):
+            pass
+
+        def remove_profile_association(self, _info, _filename):
+            pass
+
+        def uninstall_profile(self, _filename):
+            pass
+
+    operation_frames = []
+    calibration_host = BackendHost(
+        ROOT,
+        display_platform=CalibrationDisplayPlatform(),
+        emit_frame=operation_frames.append,
+    )
+    calibration_host.backend.log_path = os.path.join(
+        tempfile.mkdtemp(prefix="rwhc-operation-test-"), "hc.log"
+    )
+    shutil.copyfile(os.path.join(ROOT, "hc.log"), calibration_host.backend.log_path)
+    calibration_host.backend.displays.refresh()
+    calibration_host.backend.instruments.discover_options = lambda: (
+        [["1", "Meter A"]], [["c", "LCD"]]
+    )
+    existing_history = calibration_host.dispatch("history.list", {})
+    shared = {"rgb": [0, 0, 0]}
+
+    class FakeWriter:
+        def write_rgb(self, rgb, delay=0):
+            shared["rgb"] = [int(value) for value in rgb]
+
+        def terminate(self):
+            pass
+
+    class FakeReader:
+        status = "ready"
+
+        def read_XYZ(self):
+            code = np.asarray(shared["rgb"], dtype=float) / 1023.0
+            return BT2020_PQ_rgb_to_XYZ(code) * 10000.0
+
+        def terminate(self):
+            pass
+
+    def start_fake_measurement(_args):
+        calibration_host.backend.state.proc_color_write = FakeWriter()
+        calibration_host.backend.state.proc_color_reader = FakeReader()
+        return (
+            calibration_host.backend.state.proc_color_write,
+            calibration_host.backend.state.proc_color_reader,
+        )
+
+    calibration_host.backend.processes.start_measurement = start_fake_measurement
+    calibration_request = {
+        "schemaVersion": 1,
+        "monitorId": "4_Test HDR Display_TEST123",
+        "instrumentDescription": "Meter A",
+        "instrumentModeDescription": "LCD",
+        "grayscaleSamples": 128,
+        "colorSampleSet": "sRGB(12)",
+        "whitePoint": "0.3127,0.3290",
+        "brightMode": False,
+        "eetfEnabled": False,
+        "eetfArgs": {"sourceMax": 10000, "sourceMin": 0, "monitorMax": None, "monitorMin": None},
+        "clutEnabled": False,
+        "clutGrid": 33,
+        "installProfile": True,
+        "grayHistoryId": None,
+        "colorHistoryId": None,
+    }
+    accepted = calibration_host.dispatch(
+        "calibration.start", {"request": calibration_request}
+    )
+    calibration_id = accepted["operationId"]
+    deadline = time.monotonic() + 20
+    terminal = None
+    answered_prompts = set()
+    while time.monotonic() < deadline and terminal is None:
+        for frame in list(operation_frames):
+            if frame.get("operationId") != calibration_id:
+                continue
+            if frame["event"] == "prompt":
+                prompt_id = frame["payload"]["promptId"]
+                if prompt_id not in answered_prompts:
+                    calibration_host.dispatch("prompt.respond", {
+                        "operationId": calibration_id,
+                        "promptId": prompt_id,
+                        "response": {"choice": "continue"},
+                    })
+                    answered_prompts.add(prompt_id)
+            elif frame["event"] in ("result", "error"):
+                terminal = frame
+                break
+        time.sleep(0.01)
+    check("calibration.start reaches a terminal result", terminal is not None and terminal["event"] == "result")
+    check("real calibration pipeline produces a profile", bool(terminal and terminal["payload"]["value"]["profileReady"]))
+    check("calibration operation emits measurement progress", any(
+        frame.get("event") == "progress" and frame["payload"].get("phase") == "measure-gray"
+        for frame in operation_frames
+    ))
+    check("calibration operation bridges algorithm logs", any(
+        frame.get("event") == "log" and "PQ LUT" in frame["payload"].get("message", "")
+        for frame in operation_frames
+    ))
+    with open(calibration_host.backend.log_path, encoding="utf-8") as log_file:
+        operation_log = log_file.read()
+    check("calibration operation persists reusable measurement logs", "PQ LUT" in operation_log)
+
+    check(
+        "repository history provides a complete replay pair",
+        bool(existing_history["gray"] and existing_history["color"]),
+    )
+    replay_request = {
+        **calibration_request,
+        "grayHistoryId": existing_history["gray"][0]["id"],
+        "colorHistoryId": existing_history["color"][0]["id"],
+    }
+
+    def reject_measurement_start(_args):
+        raise AssertionError("history replay must not start physical measurement I/O")
+
+    calibration_host.backend.processes.start_measurement = reject_measurement_start
+    replay_start_index = len(operation_frames)
+    replay_accepted = calibration_host.dispatch(
+        "calibration.start", {"request": replay_request}
+    )
+    replay_id = replay_accepted["operationId"]
+    replay_terminal = None
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and replay_terminal is None:
+        for frame in operation_frames[replay_start_index:]:
+            if frame.get("operationId") == replay_id and frame["event"] in ("result", "error"):
+                replay_terminal = frame
+                break
+        time.sleep(0.01)
+    replay_frames = [
+        frame for frame in operation_frames[replay_start_index:]
+        if frame.get("operationId") == replay_id
+    ]
+    check(
+        "history replay completes through calibration.start",
+        replay_terminal is not None
+        and replay_terminal["event"] == "result"
+        and replay_terminal["payload"]["value"]["historyOnly"] is True,
+    )
+    check(
+        "history replay emits progress and logs without hardware prompts",
+        any(frame["event"] == "progress" for frame in replay_frames)
+        and any(frame["event"] == "log" for frame in replay_frames)
+        and not any(frame["event"] == "prompt" for frame in replay_frames),
+    )
+    calibration_host.close()
 
     process = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "backend_host.py"), "--stdio", "--base-dir", ROOT],

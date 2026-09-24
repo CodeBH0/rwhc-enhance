@@ -10,6 +10,16 @@
 
 ## 未发布
 
+- 完成首个可用 WinUI 闭环：页面可选择核心请求参数及灰阶/颜色历史数据；无色度计但
+  存在完整历史组合时自动进入 history-only 模式，并展示 progress、log 和最终 result。
+- 新增根目录 `run-winui.cmd`/`run-winui.ps1` 作为新版应用推荐入口；明确 `app.py` 是迁移期 legacy Tk
+  UI。WinUI 继续自动管理 `backend_host.py` 生命周期，用户无需手动启动 backend。
+- 新增 `--history-smoke-test`，以正式历史解析、IPC、请求校验和校准 workflow 完成
+  C# → Python → result 验证，仅替换 Windows 显示器/ICC 硬件边缘。
+- 改善 Python/backend 启动失败、无显示器、无色度计、参数错误和任务冲突提示。
+- 修复中文 Windows 下任务日志乱码：WinUI 启动 Python 时显式设置 UTF-8 环境，backend
+  host 也强制把 stdin/stdout/stderr 配置为 UTF-8；history smoke 会验证中文日志无替换字符。
+
 - 将 protocol v1 扩展为可承载校准的多路复用边界：短 RPC response 与带序号的
   `progress`/`log`/`prompt`/`result`/`error` 事件共用 NDJSON 管道，支持 prompt 回复、
   单一长任务互斥和协作取消。新增严格的 `CalibrationRequest` schema v1 codec，明确

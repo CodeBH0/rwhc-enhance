@@ -18,10 +18,19 @@ backend 的真实进程边界。现有 Python/Tk UI 只在 WinUI 达到功能完
   协作取消；
 - 已为 `CalibrationRequest` 建立严格、版本化的 JSON 契约；
 - 显示器发现/选择、SDR paper white、Argyll 仪器与测量模式均已调用真实 backend；
-- 这些调用保持只读，不改写校准算法，也不改变显示器 ICC 关联。
+- `calibration.start` 已打通真实色域、PQ、色度和复测流程，支持进度、日志、提示、结果、
+  错误与取消；
+- WinUI 已支持选择完整灰阶/颜色历史数据，在无色度计时运行真实历史回放 workflow。
 
-目前完整校准流程仍请运行 `python app.py`。如需构建和运行 WinUI 迁移骨架，请先安装
-.NET 10 SDK 和项目 Python 依赖，然后在项目根目录执行：
+新版应用的入口是 WinUI。`app.py` 只是迁移期保留的 legacy Tk UI，不是新版入口。
+安装 .NET 10 SDK 和项目 Python 依赖后，在项目根目录一键启动：
+
+```powershell
+.\run-winui.cmd
+```
+
+启动器会调用 `run-winui.ps1` 检查 Python backend、构建并启动 WinUI。WinUI 会自动启动和关闭
+`backend_host.py`，用户不需要、也不应手动运行 backend host。等价的开发命令是：
 
 ```powershell
 dotnet build frontend\Rwhc.WinUI\Rwhc.WinUI.csproj -c Debug -p:Platform=x64
@@ -58,12 +67,36 @@ backend profile。详细设计见 [IPC 协议](docs/FRONTEND_IPC.md)、
    pip install -r requirements.txt
    ```
 
-4. **运行程序**
+4. **运行新版 WinUI 应用（推荐）**
 
-   ```bash
-   python app.py
+   ```powershell
+   .\run-winui.cmd
    ```
-   点击校准按钮开始校准
+
+   应用会自行管理 Python backend。选择实时测量，或同时选择历史灰阶与历史颜色数据，
+   确认参数后开始校准。
+
+5. **旧版 Tk 界面**
+
+   `python app.py` 启动的是迁移期保留的 legacy Tk UI，仅用于 WinUI 尚未覆盖的功能，
+   不是新版应用入口。
+
+### 无色度计历史回放
+
+如果 `hc.log` 至少包含一组完整灰阶和一组完整颜色测量，WinUI 会把它们列在两个历史
+下拉框中。未检测到色度计时会自动选择最近的完整组合。点击“使用历史数据校准”后，
+应用仍会通过 WinUI → IPC → `calibration.start` 执行真实 workflow 和原有校准数学，
+只是不会启动 `dogegen`/`spotread`。进度、日志和最终结果会显示在页面中。历史数据必须
+来自同一显示器及相同显示状态。
+
+构建后可运行硬件隔离的端到端验证：
+
+```powershell
+frontend\Rwhc.WinUI\bin\x64\Debug\net10.0-windows10.0.26100.0\win-x64\Rwhc.WinUI.exe --history-smoke-test
+```
+
+该显式测试模式只替换 Windows 显示器/ICC 边缘；历史解析、IPC、请求校验、workflow 和
+校准算法均使用正式实现。
 
 ## 校色设备
 目前设备驱动使用argyllcms，该驱动支持的常见设备有爱色丽全系和Datacolor  

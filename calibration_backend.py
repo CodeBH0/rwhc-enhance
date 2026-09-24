@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -376,6 +377,7 @@ class ExternalProcessService:
     def __init__(self, base_dir, state):
         self.base_dir = base_dir
         self.state = state
+        self._cleanup_lock = threading.Lock()
 
     def launch_tool(self, tool_name):
         script = os.path.join(self.base_dir, "tools", tool_name)
@@ -405,16 +407,18 @@ class ExternalProcessService:
 
     def cleanup_measurement_processes(self):
         errors = []
-        for field_name in ("proc_color_write", "proc_color_reader"):
-            process = getattr(self.state, field_name)
-            if process is None:
-                continue
+        with self._cleanup_lock:
+            processes = []
+            for field_name in ("proc_color_write", "proc_color_reader"):
+                process = getattr(self.state, field_name)
+                setattr(self.state, field_name, None)
+                if process is not None:
+                    processes.append(process)
+        for process in processes:
             try:
                 process.terminate()
             except Exception as exc:
                 errors.append(exc)
-            finally:
-                setattr(self.state, field_name, None)
         if errors:
             raise errors[0]
 
